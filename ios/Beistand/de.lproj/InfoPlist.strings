@@ -1,0 +1,6 @@
+"NSCameraUsageDescription" = "Beistand liest Briefe und beschreibt, was die Kamera sieht.";
+"NSMicrophoneUsageDescription" = "Beistand hört zu, wenn Sie sprechen.";
+"NSSpeechRecognitionUsageDescription" = "Beistand versteht, was Sie sagen – direkt auf dem Telefon.";
+"NSLocationWhenInUseUsageDescription" = "Beistand sagt Ihnen, wo Sie sind, und teilt den Standort nur im Notfall.";
+"NSMotionUsageDescription" = "Beistand erkennt Stürze und ein heruntergefallenes Telefon.";
+"NSLocalNetworkUsageDescription" = "Verbindung zum Beistand-Server im Testbetrieb.";

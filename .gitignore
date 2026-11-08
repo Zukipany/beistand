@@ -1,0 +1,10 @@
+build/
+*.xcodeproj/xcuserdata/
+__pycache__/
+.env
+.pytest_cache/
+ios/build/
+.venv/
+ios/build-device/
+.DS_Store
+ios/Beistand.xcodeproj/

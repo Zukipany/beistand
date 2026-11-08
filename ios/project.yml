@@ -1,0 +1,71 @@
+name: Beistand
+options:
+  bundleIdPrefix: app.beistand
+  developmentLanguage: en
+  knownRegions: [en, de, Base]
+  deploymentTarget:
+    iOS: "18.0"
+    watchOS: "11.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+targets:
+  Beistand:
+    type: application
+    platform: iOS
+    sources: [Beistand, Shared]
+    dependencies:
+      - target: BeistandWatch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.beistand.ios
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Beistand
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_NSCameraUsageDescription: "Beistand reads letters and describes what the camera sees."
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Beistand listens when you speak."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Beistand understands what you say, right on the phone."
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Beistand tells you where you are and shares your location only in an emergency."
+        INFOPLIST_KEY_NSMotionUsageDescription: "Beistand detects falls and a dropped phone."
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Connects to the Beistand server during testing."
+    info:
+      path: Beistand/Info.plist
+      properties:
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        UIBackgroundModes: [audio, location]
+  BeistandWatch:
+    type: application
+    platform: watchOS
+    sources: [BeistandWatch, Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.beistand.ios.watchkitapp
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Beistand
+        INFOPLIST_KEY_WKCompanionAppBundleIdentifier: app.beistand.ios
+        INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp: NO
+        INFOPLIST_KEY_NSMotionUsageDescription: "Beistand detects falls at the wrist."
+        SKIP_INSTALL: YES
+  BeistandTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [BeistandTests]
+    dependencies:
+      - target: Beistand
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: app.beistand.ios.tests
+schemes:
+  Beistand:
+    build:
+      targets:
+        Beistand: all
+        BeistandTests: [test]
+    test:
+      targets: [BeistandTests]
