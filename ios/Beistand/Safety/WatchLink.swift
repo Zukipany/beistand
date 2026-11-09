@@ -34,6 +34,14 @@ final class WatchLink: NSObject, WCSessionDelegate {
         try? s.updateApplicationContext(st.dict)
     }
 
+    /// Sounds go as a message when the watch app is open, else queued, so the wrist still learns about them.
+    func sound(_ k: SoundKind) {
+        let s = WCSession.default
+        guard s.activationState == .activated, s.isPaired, s.isWatchAppInstalled else { return }
+        if s.isReachable { s.sendMessage(WatchMessage.sound(k).dict, replyHandler: nil, errorHandler: nil) }
+        else { s.transferUserInfo(WatchMessage.sound(k).dict) }
+    }
+
     func cue(_ c: GuideCue) {
         let s = WCSession.default
         guard s.activationState == .activated, s.isReachable else { return }
@@ -55,7 +63,7 @@ final class WatchLink: NSObject, WCSessionDelegate {
             guard Date().timeIntervalSince(at) < 120 else { return }
             lastWristImpact = at
             safety.wristFall()
-        case .cue: break
+        case .cue, .sound: break
         }
     }
 

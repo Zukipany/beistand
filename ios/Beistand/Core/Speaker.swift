@@ -24,8 +24,10 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     /// `word` is called on the main queue with the range of each word as it is spoken (for highlighting).
-    func say(_ text: String, interrupt: Bool = true, word: ((NSRange) -> Void)? = nil, then done: (() -> Void)? = nil) {
-        let lang = language, rate = rate
+    /// `language`: a BCP-47 voice language other than the app's (e.g. counter mode speaking to staff).
+    func say(_ text: String, interrupt: Bool = true, language: String? = nil,
+             word: ((NSRange) -> Void)? = nil, then done: (() -> Void)? = nil) {
+        let lang = language ?? self.language, rate = rate
         // Fallback: if speech stalls (voice lookup can hang on a fresh device),
         // still continue after roughly the time the sentence would take.
         if let done {

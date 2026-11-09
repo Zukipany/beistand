@@ -35,6 +35,14 @@ struct WatchRoot: View {
     @Environment(WatchModel.self) private var model
 
     var body: some View {
+        if let k = model.recentSound, model.state.incident == "none" || model.state.incident == "resolved" {
+            SoundCard(kind: k)
+        } else {
+            main
+        }
+    }
+
+    @ViewBuilder private var main: some View {
         switch model.state.incident {
         case "asking": AskingView()
         case "contacting", "contact_responding", "emergency_confirmed": HelpComingView()
@@ -143,5 +151,21 @@ struct OfflineFallView: View {
                 Button(tr("Call 112", "112 anrufen")) { model.call("112") }.tint(.red)
             }
         }
+    }
+}
+
+/// A sound the phone heard, big enough to read at a glance. Tap to dismiss.
+struct SoundCard: View {
+    @Environment(WatchModel.self) private var model
+    let kind: SoundKind
+    var body: some View {
+        VStack(spacing: 6) {
+            Image(systemName: kind.icon).font(.system(size: 44))
+            Text(kind.name).font(.title3.bold()).multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background((kind.urgent ? Color.red : Color.indigo).opacity(0.6).ignoresSafeArea())
+        .onTapGesture { model.recentSound = nil }
+        .accessibilityElement(children: .combine)
     }
 }

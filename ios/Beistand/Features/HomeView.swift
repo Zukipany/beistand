@@ -11,6 +11,8 @@ struct HomeView: View {
     @State private var showMagnifier = false
     @State private var showCaptions = false
     @State private var showDiagnostics = false
+    @State private var showSounds = false
+    @State private var showCounter = false
     @State private var status = ""
     @State private var tip: String?
 
@@ -37,6 +39,20 @@ struct HomeView: View {
                               explanation: tr("Writes down what people around you say. Louder speech shows bigger.",
                                               "Schreibt auf, was Menschen um Sie herum sagen. Lautes erscheint größer.")) {
                         showCaptions = true
+                    }
+                }
+                if store.has(.hearing) || store.has(.deafblind) {
+                    BigButton(title: tr("Sound alerts", "Geräusch-Alarme"), systemImage: "ear.badge.waveform", color: .orange,
+                              explanation: tr("Shows and vibrates when there is a siren, alarm, horn, the doorbell or a baby crying.",
+                                              "Zeigt und vibriert bei Sirene, Alarm, Hupe, Türklingel oder weinendem Baby.")) {
+                        showSounds = true
+                    }
+                }
+                if store.has(.hearing) {
+                    BigButton(title: tr("Counter mode", "Schalter-Modus"), systemImage: "rectangle.split.1x2", color: .blue,
+                              explanation: tr("Lay the phone between you and the staff. Each side reads the other's words.",
+                                              "Legen Sie das Telefon zwischen sich und das Personal. Jede Seite liest die Worte der anderen.")) {
+                        showCounter = true
                     }
                 }
                 if store.has(.lowVision) {
@@ -80,11 +96,15 @@ struct HomeView: View {
             .fullScreenCover(isPresented: $showMagnifier) { MagnifierView() }
             .fullScreenCover(isPresented: $showCaptions) { LiveCaptionsView() }
             .sheet(isPresented: $showDiagnostics) { NavigationStack { DiagnosticsView() } }
+            .fullScreenCover(isPresented: $showSounds) { SoundAlertsView() }
+            .fullScreenCover(isPresented: $showCounter) { CounterModeView() }
             .onAppear {
                 #if DEBUG
                 if UserDefaults.standard.bool(forKey: "openMagnifier") { showMagnifier = true }   // test hook
                 if UserDefaults.standard.bool(forKey: "openCaptions") { showCaptions = true }     // test hook
                 if UserDefaults.standard.bool(forKey: "openDiagnostics") { showDiagnostics = true } // test hook
+                if UserDefaults.standard.bool(forKey: "openSounds") { showSounds = true }           // test hook
+                if UserDefaults.standard.bool(forKey: "openCounter") { showCounter = true }         // test hook
                 #endif
             }
             .task { await loadWeather() }

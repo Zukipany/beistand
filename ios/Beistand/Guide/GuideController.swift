@@ -89,6 +89,7 @@ final class GuideController {
     let camera = GuideCamera()
     private let beeper = Beeper()
     private var objectAlerts = ObjectAlerts()
+    private var memory = SceneMemory()
     /// Latest obstacle lanes, for the on-screen indicator.
     private(set) var zones = ObstacleZones()
     private let audio = LiveAudio()
@@ -119,6 +120,7 @@ final class GuideController {
         beeper.enabled = AppStore.shared.obstacleWarnings
         beeper.sound = !AppStore.shared.has(.hearing) && !AppStore.shared.has(.deafblind)
         objectAlerts = ObjectAlerts()
+        memory = SceneMemory()
         camera.onZones = { [weak self] z in self?.obstaclesChanged(z) }
         camera.onObjects = { [weak self] objects in self?.objectsSeen(objects) }
         WalkRecorder.shared.begin()
@@ -342,6 +344,11 @@ final class GuideController {
             return await planRoute(to: args["destination"] ?? "")
         case "crossing_info":
             return await crossingInfo()
+        case "next_departures":
+            return await nextDepartures()
+        case "where_is":
+            let here = LocationService.shared.last.map { Coord(lat: $0.coordinate.latitude, lon: $0.coordinate.longitude) }
+            return ["ok": true, "answer": memory.answer(args["thing"] ?? "", now: ProcessInfo.processInfo.systemUptime, here: here)]
         case "call_emergency_contact":
             SafetyService.shared.trigger(.lost)
             let who = AppStore.shared.profile?.contacts.first?.name ?? tr("Your contact", "Ihr Kontakt")
@@ -389,6 +396,37 @@ final class GuideController {
         }
     }
 
+    struct Stations: Decodable {
+        struct Station: Decodable { let globalId: String; let name: String; let distanceInMeters: Double? }
+        let data: [Station]
+    }
+    struct Departures: Decodable {
+        struct Departure: Decodable { let line: String?; let destination: String?; let platform: Int?; let minutes: Int; let type: String? }
+        let data: [Departure]
+        let age_s: Int?
+    }
+
+    /// Next departures at the nearest stop (MVG), as the guide's tool and for the person.
+    func nextDepartures() async -> [String: Any] {
+        guard let loc = await LocationService.shared.current() else {
+            return ["ok": false, "message": tr("I don't know the location right now.", "Ich kenne den Standort gerade nicht.")]
+        }
+        do {
+            let st: Stations = try await GuideAPI.get("stations", ["lat": "\(loc.coordinate.latitude)", "lon": "\(loc.coordinate.longitude)"])
+            guard let stop = st.data.first else {
+                return ["ok": false, "message": tr("No stop nearby.", "Keine Haltestelle in der Nähe.")]
+            }
+            let dep: Departures = try await GuideAPI.get("departures", ["global_id": stop.globalId, "limit": "8"])
+            let next = dep.data.prefix(4).map { d -> [String: Any] in
+                ["line": d.line ?? "", "destination": d.destination ?? "", "minutes": d.minutes, "platform": d.platform ?? 0]
+            }
+            return ["ok": true, "stop": stop.name, "distance_m": Int(stop.distanceInMeters ?? 0),
+                    "departures": next, "data_age_s": dep.age_s ?? 0]
+        } catch {
+            return ["ok": false, "message": tr("Departures are not available right now.", "Abfahrten sind gerade nicht verfügbar.")]
+        }
+    }
+
     /// Nearest traffic lights and whether they have a signal for blind people (city data).
     func crossingInfo() async -> [String: Any] {
         guard let loc = await LocationService.shared.current() else {
@@ -410,6 +448,32 @@ final class GuideController {
 
     // MARK: obstacles (fast layer)
 
+    /// Measured distances for the live guide, so it doesn't have to guess them from a 1 fps picture.
+    private func obstacleContext() -> String {
+        guard camera.usesLiDAR else { return "" }
+        func m(_ d: Float?) -> String { d.map { String(format: "%.1f m", $0) } ?? tr("clear", "frei") }
+        return tr(" LiDAR: ahead \(m(zones.centre)), left \(m(zones.left)), right \(m(zones.right)).",
+                  " LiDAR: vorne \(m(zones.centre)), links \(m(zones.left)), rechts \(m(zones.right)).")
+    }
+
+    /// Simple mode: read the next departures aloud (the live guide uses the same data as a tool).
+    func sayDepartures() {
+        Task {
+            let r = await nextDepartures()
+            guard r["ok"] as? Bool == true, let stop = r["stop"] as? String,
+                  let deps = r["departures"] as? [[String: Any]], !deps.isEmpty else {
+                say(r["message"] as? String ?? tr("No departures found.", "Keine Abfahrten gefunden.")); return
+            }
+            let parts = deps.prefix(3).map { d -> String in
+                let line = d["line"] as? String ?? "", dest = d["destination"] as? String ?? ""
+                let min = d["minutes"] as? Int ?? 0
+                let when = min == 0 ? tr("now", "jetzt") : tr("in \(min) min", "in \(min) Min.")
+                return tr("\(line) to \(dest) \(when)", "\(line) nach \(dest) \(when)")
+            }
+            say("\(stop): " + parts.joined(separator: ". ") + ".")
+        }
+    }
+
     private func obstaclesChanged(_ z: ObstacleZones) {
         zones = z
         beeper.update(z.centre)
@@ -417,7 +481,10 @@ final class GuideController {
     }
 
     private func objectsSeen(_ objects: [SeenObject]) {
-        guard AppStore.shared.obstacleWarnings, !objects.isEmpty else { return }
+        guard !objects.isEmpty else { return }
+        let here = LocationService.shared.last.map { Coord(lat: $0.coordinate.latitude, lon: $0.coordinate.longitude) }
+        memory.add(objects, at: ProcessInfo.processInfo.systemUptime, position: here)
+        guard AppStore.shared.obstacleWarnings else { return }
         WalkRecorder.shared.log(.init(t: 0, kind: "objects", objects: objects))
         guard let sentence = objectAlerts.feed(objects, at: ProcessInfo.processInfo.systemUptime) else { return }
         warn(sentence)
@@ -477,7 +544,7 @@ final class GuideController {
             // Keep the guide up to date without making it talk.
             if mode == .live, Date().timeIntervalSince(lastContext) > 15 {
                 lastContext = Date()
-                tell(forGuide: f.context(at: p, heading: LocationService.shared.heading), forPerson: nil, respond: false)
+                tell(forGuide: f.context(at: p, heading: LocationService.shared.heading) + obstacleContext(), forPerson: nil, respond: false)
             }
         }
     }

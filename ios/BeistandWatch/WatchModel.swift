@@ -194,8 +194,32 @@ final class WatchModel: NSObject, WCSessionDelegate {
         DispatchQueue.main.async { self.apply(WatchState(ctx)); self.finishTasksIfDone() }
     }
 
-    func session(_ s: WCSession, didReceiveMessage msg: [String: Any]) {
-        guard case .cue(let c)? = WatchMessage(msg) else { return }
-        DispatchQueue.main.async { self.play(c) }
+    func session(_ s: WCSession, didReceiveMessage msg: [String: Any]) { receive(msg) }
+    func session(_ s: WCSession, didReceiveUserInfo info: [String: Any] = [:]) { receive(info) }
+
+    private func receive(_ msg: [String: Any]) {
+        switch WatchMessage(msg) {
+        case .cue(let c)?: DispatchQueue.main.async { self.play(c) }
+        case .sound(let k)?: DispatchQueue.main.async { self.heard(k) }
+        default: break
+        }
+    }
+
+    // MARK: sounds (hearing mode)
+
+    /// Shown full screen for a few seconds; urgent sounds tap three times.
+    var recentSound: SoundKind?
+
+    func heard(_ k: SoundKind) {
+        recentSound = k
+        let dev = WKInterfaceDevice.current()
+        if k.urgent {
+            for i in 0..<3 { DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.6) { dev.play(.notification) } }
+        } else {
+            dev.play(.directionUp)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+            if self?.recentSound == k { self?.recentSound = nil }
+        }
     }
 }

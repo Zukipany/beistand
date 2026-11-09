@@ -150,3 +150,17 @@ Target: hackaTUM 27–29 Nov 2026 – older people mode + safety layer fully, si
 - Verified: unit tests (geometry, unprojection, beep timing, alert order, label mapping, replay), simulator fallback path.
   NOT verified: anything with real LiDAR/camera (simulator has none) — needs the iPhone 16 Pro: depth orientation, box →
   depth mapping (`u = 1 − midY, v = 1 − midX` for portrait), classifier labels outdoors, beep feel.
+
+## Hearing tools and smarter guide (9 Nov 2026, PLAN-ADVANCED 18–21 Nov block)
+- Sound alerts: `Shared/SoundKind.swift` (8 kinds, thresholds, urgency, `SoundAlertPolicy` with 8 s no-repeat),
+  `Core/SoundAlerts.swift` (`SoundClassifier` on Apple's built-in classifier, haptic patterns, `SoundWatcher`),
+  `Features/SoundAlertsView.swift` (big card, slow pulse ≤ 1/s, steady in seizure mode). Live captions feed the same
+  classifier from their own microphone tap and show a named banner. Watch: `WatchMessage.sound` → full-screen card + haptics.
+- Counter mode: `Features/CounterModeView.swift`; staff half rotated 180°, quick phrases, staff language menu,
+  Translation sessions both ways when installed; `Speaker.say(…, language:)`.
+- Guide tools `next_departures` (MVG /stations + /departures; backend `with_minutes` ignores realtime > 3 h off planned,
+  drops past/cancelled) and `where_is` (`SceneMemory`, 3 min, one entry per thing per 10 s). Simple mode: "Next departures" button.
+- L1 grounding: periodic live context now includes LiDAR lane distances.
+- Debug hooks: `-openSounds YES [-testSound siren]`, `-openCounter YES`.
+- Verified: backend tests (23), app unit tests, simulator: siren card, counter mode layout, live departures at Marienplatz.
+  NOT verified: real sounds on the iPhone, translation on device, watch sound card on a real watch.

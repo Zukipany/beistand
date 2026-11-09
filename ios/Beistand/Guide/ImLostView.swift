@@ -78,6 +78,11 @@ struct ImLostView: View {
                           explanation: tr("Say where you want to go. Hold to type it.", "Sagen Sie, wohin Sie möchten. Halten zum Eintippen.")) { guide.askDestination() }
                     .simultaneousGesture(LongPressGesture(minimumDuration: 1.5).onEnded { _ in typing = true })
             }
+            if guide.mode != .live {
+                BigButton(title: tr("Next departures", "Nächste Abfahrten"), systemImage: "tram.fill", color: .green,
+                          explanation: tr("Reads the next trains, trams and buses at the nearest stop.",
+                                          "Liest die nächsten Züge, Trams und Busse an der nächsten Haltestelle vor.")) { guide.sayDepartures() }
+            }
             HStack(spacing: 12) {
                 BigButton(title: tr("Help", "Hilfe"), color: .red,
                           explanation: tr("Calls your emergency contact.", "Ruft Ihren Notfallkontakt.")) { safety.requestHelp() }

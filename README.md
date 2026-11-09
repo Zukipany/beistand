@@ -36,7 +36,7 @@ Sign-up asks **what is hard, never for a diagnosis**. The app talks from the fir
 | **Older person** | A calm home screen with four big buttons (Call family, Where am I, Read this, Help). Letters are read aloud in simple words with the deadline first. Strange messages are checked for scams. The weather tip warns about ice and heat. A fall starts the help ladder; a dropped phone calls out. |
 | **Blind** | One button, "I'm lost", opens a camera guide that says where the person is, asks where to go, and leads them by voice and vibration. The phone beeps like a parking sensor when something is in the way and names what it is ("Bike, 2 metres, left"). Routes prefer traffic lights that have a sound signal for blind people, and the guide announces them. |
 | **Low vision** | A live magnifier with real camera zoom, light, high-contrast and inverted colours, freeze, and "Explain", which reads the important text aloud with each word highlighted. |
-| **Deaf or hard of hearing** | Live captions of the people around them, where louder speech appears bigger and bolder, a loudness meter, a "loud sound nearby" warning, and on-phone translation when the other person speaks another language. Alerts become light and vibration instead of speech. |
+| **Deaf or hard of hearing** | Sound alerts for sirens, doorbells and more (also on the watch), counter mode for talking at a desk, live captions of the people around them, where louder speech appears bigger and bolder, a loudness meter, a "loud sound nearby" warning, and on-phone translation when the other person speaks another language. Alerts become light and vibration instead of speech. |
 | **Wheelchair, walker, pram** | Step-free routes (wheelchair profile). |
 | **Memory problems** | A bystander card on the alert screen ("I have memory problems, please call …"); more is planned (day anchor, way home). |
 | **Seizures** | Nothing in the app ever flashes; alert screens use steady colour. The bystander card explains what to do. |
@@ -86,7 +86,10 @@ Sign-up asks **what is hard, never for a diagnosis**. The app talks from the fir
 | Settings → Diagnostics (status and test button per feature) | ✅ | |
 | Test-walk recorder and replay | ✅ | |
 | Accounts and family view (Supabase) | 📝 | Schema written (`supabase/schema.sql`), not wired yet; profiles live in server memory. |
-| Morning check-in, medicine taps, day anchor, way home, counter mode, sound alerts, lift rerouting, transport helper | 📝 | See [PLAN-ADVANCED.md](PLAN-ADVANCED.md). |
+| Sound alerts (siren, alarm, horn, doorbell, knock, baby, dog, shout) on phone and watch | 🧪 | On-phone SoundAnalysis; big named card, vibration pattern per sound, watch tap. Also inside live captions. Simulated alert verified; real sounds pending. |
+| Counter mode (phone flat between two people, staff side upside down) | ✅ / 🧪 | Captions of the staff, typed text shown and spoken; on-phone translation both ways on iOS 26. |
+| Guide asks: "next departures", "where was the bench?" | ✅ | Live MVG departures (also a button in simple mode); a 3-minute memory of what the camera recognised. |
+| Morning check-in, medicine taps, day anchor, way home, lift rerouting | 📝 | See [PLAN-ADVANCED.md](PLAN-ADVANCED.md). |
 
 ---
 
@@ -139,7 +142,7 @@ flowchart LR
 | iPhone app | Swift 5 mode, SwiftUI, iOS 18+ (newer speech and translation on iOS 26+), generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen) |
 | Watch app | watchOS 11+, SwiftUI, WatchConnectivity, CoreMotion |
 | Backend | Python 3.11+, FastAPI, httpx, the official `anthropic` SDK |
-| On-phone AI | Speech (SFSpeechRecognizer, SpeechAnalyzer), Translation, Vision, ARKit scene depth, SoundAnalysis-ready |
+| On-phone AI | Speech (SFSpeechRecognizer, SpeechAnalyzer), Translation, Vision, ARKit scene depth, SoundAnalysis |
 | Cloud AI | Claude Opus 5.5 (vision and language), Gemini Live (`gemini-3.8-live`) |
 | Accounts (planned) | Supabase (Postgres + Auth, row-level security) |
 
@@ -499,6 +502,8 @@ Pass them after the bundle id: `xcrun simctl launch <device> app.beistand.ios -o
 | `-openMagnifier YES` | Open the magnifier (simulator shows a test medicine label) |
 | `-openCaptions YES -demoCaptions YES` | Live captions with a scripted conversation at different volumes |
 | `-openDiagnostics YES` | Open Diagnostics |
+| `-openSounds YES -testSound siren` | Open sound alerts and raise a test alert after 2 s |
+| `-openCounter YES` | Open counter mode |
 | `-fakeVolume 0.2` | Pretend the phone is quiet |
 | Watch: `-watchAction ok\|help\|fall` | The watch presses that button 3 s after connecting |
 

@@ -154,7 +154,7 @@ def test_guide_prompt_keeps_safety_rules():
     assert en["voice_language"] == "en-US"
     assert "low vision" in guide.prompt_for("low_vision", "en")["system_prompt"]
     names = {f["name"] for f in guide.TOOLS[0]["functionDeclarations"]}
-    assert names == {"plan_route", "call_emergency_contact"}
+    assert {"plan_route", "call_emergency_contact"} <= names
 
 
 def test_direct_route_and_compass():
@@ -279,3 +279,23 @@ def test_route_has_crossings_and_blind_picks_alternative(monkeypatch):
     assert walk["distance_m"] == 744                                  # walkers keep the shortest
     assert blind["distance_m"] == 800 and blind["alternatives_checked"] == 2
     assert any(x["signal"] == "sound" for x in blind["crossings"])
+
+
+def test_departure_minutes_ignore_implausible_realtime():
+    from app.data import with_minutes
+    now = 1_000_000.0                                    # seconds
+    deps = [
+        {"line": "U3", "planned": (now + 300) * 1000, "realtime": (now - 86_000) * 1000},   # realtime a day off: use planned
+        {"line": "S1", "planned": (now + 60) * 1000, "realtime": (now + 360) * 1000},       # delayed: use realtime
+        {"line": "S2", "planned": (now - 120) * 1000, "realtime": None},                    # gone
+        {"line": "S3", "planned": (now + 30) * 1000, "realtime": None, "cancelled": True},  # cancelled
+    ]
+    out = with_minutes(deps, now)
+    assert [(d["line"], d["minutes"]) for d in out] == [("U3", 5), ("S1", 6)]
+
+
+def test_guide_tools_declared():
+    from app import guide
+    names = {f["name"] for f in guide.TOOLS[0]["functionDeclarations"]}
+    assert {"plan_route", "crossing_info", "next_departures", "where_is", "call_emergency_contact"} <= names
+    assert "next_departures()" in guide.prompt_for("sight", "en")["system_prompt"]
