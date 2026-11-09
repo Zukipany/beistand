@@ -172,6 +172,10 @@ struct FamilySettingsView: View {
                     Section("Demo") {
                         Toggle(tr("A phone fall counts as a fall of the person", "Sturz des Telefons zählt als Sturz der Person"), isOn: $store.demoPhoneImpactIsFall)
                         Toggle(tr("Obstacle beeps and warnings in the camera guide", "Hindernis-Töne und Warnungen in der Kamera-Begleitung"), isOn: $store.obstacleWarnings)
+                        Picker(tr("The guide uses", "Die Begleitung nutzt"), selection: $store.testDrive) {
+                            Text(tr("Camera and GPS", "Kamera und GPS")).tag(false)
+                            Text(tr("Test drive (street photos)", "Testfahrt (Straßenfotos)")).tag(true)
+                        }
                         Button(tr("Simulate a fall now", "Sturz jetzt simulieren")) { SafetyService.shared.trigger(.fall); dismiss() }
                         Button(tr("Start the phone finder now", "Telefon-Finder jetzt starten")) { SafetyService.shared.startDropFinder(); dismiss() }
                         Button(tr("Open the camera guide", "Kamera-Begleitung öffnen")) { dismiss(); GuideController.shared.requestedOpen = true }

@@ -7,6 +7,7 @@ import WatchConnectivity
 /// for real. Meant for the family, testers and the demo, so problems show up before they matter.
 struct DiagnosticsView: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
     @State private var health: [String: Any] = [:]
     @State private var healthError: String?
     @State private var speech = "…"
@@ -18,6 +19,20 @@ struct DiagnosticsView: View {
 
     var body: some View {
         List {
+            Section {
+                Button {
+                    let start = LocationService.shared.last.map { Coord(lat: $0.coordinate.latitude, lon: $0.coordinate.longitude) }
+                    SimDrive.shared.start(at: start ?? Coord(lat: 48.1374, lon: 11.5755))
+                    GuideController.shared.requestedOpen = true
+                    dismiss()
+                } label: {
+                    Label(tr("Test drive: walk real streets from here", "Testfahrt: echte Straßen von hier aus ablaufen"),
+                          systemImage: "gamecontroller.fill").font(.headline)
+                }
+            } footer: {
+                Text(tr("Move with the sticks or W A S D. The guide gets street pictures instead of the camera. Needs GOOGLE_MAPS_API_KEY or MAPILLARY_TOKEN on the server for real pictures.",
+                        "Bewegen mit den Sticks oder W A S D. Der Guide bekommt Straßenbilder statt der Kamera. Für echte Bilder braucht der Server GOOGLE_MAPS_API_KEY oder MAPILLARY_TOKEN."))
+            }
             Section(tr("Server", "Server")) {
                 row(tr("Address", "Adresse"), store.backendURL.absoluteString)
                 row(tr("Status", "Status"), healthError ?? (health["ok"] as? Bool == true ? tr("reachable", "erreichbar") : "…"),

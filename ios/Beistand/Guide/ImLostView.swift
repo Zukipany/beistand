@@ -13,13 +13,20 @@ struct ImLostView: View {
 
     var body: some View {
         ZStack {
-            GuideCameraPreview(camera: guide.camera).ignoresSafeArea()
-            #if targetEnvironment(simulator)
-            SimulatedStreet().ignoresSafeArea()
-            #endif
+            if SimDrive.shared.active, SimDrive.shared.source == .viewer {
+                MapillaryDriveView().ignoresSafeArea()
+            } else if SimDrive.shared.active {
+                SimStreetPicture().ignoresSafeArea()
+            } else {
+                GuideCameraPreview(camera: guide.camera).ignoresSafeArea()
+                #if targetEnvironment(simulator)
+                SimulatedStreet().ignoresSafeArea()
+                #endif
+            }
             // Lighter in the live view, so the street stays visible behind the labels.
-            LinearGradient(colors: [.black.opacity(guide.lookAround ? 0.5 : 0.85), .black.opacity(guide.lookAround ? 0 : 0.2), .black.opacity(0.9)],
+            LinearGradient(colors: [.black.opacity(compact ? 0.5 : 0.85), .black.opacity(compact ? 0 : 0.2), .black.opacity(compact ? 0.6 : 0.9)],
                            startPoint: .top, endPoint: .bottom).ignoresSafeArea()
+                .allowsHitTesting(false)          // touches reach the street viewer underneath
             if guide.lookAround || guide.destinationCoord != nil {
                 LiveViewOverlay().ignoresSafeArea()
             }
@@ -27,10 +34,11 @@ struct ImLostView: View {
             VStack(spacing: 14) {
                 header
                 VolumeBanner()
-                if guide.lookAround {
+                if compact {
                     // Street-view layout: one caption line under the compass, a slim bar of controls.
                     liveCaption.padding(.top, 52)
                     Spacer(minLength: 0)
+                    if SimDrive.shared.active { SimDriveControls() }
                     liveControls
                 } else {
                     captions
@@ -42,15 +50,33 @@ struct ImLostView: View {
         }
         .foregroundStyle(.white)
         .onAppear {
-            guide.start()
+            #if DEBUG
+            // `-simDrive YES -simStart 48.1374,11.5755 -simHeading 90` starts a test drive there.
+            if UserDefaults.standard.bool(forKey: "simDrive"), !SimDrive.shared.active {
+                let n = (UserDefaults.standard.string(forKey: "simStart") ?? "").split(separator: ",").compactMap { Double($0) }
+                SimDrive.shared.start(at: n.count == 2 ? Coord(lat: n[0], lon: n[1]) : nil,
+                                      heading: Double(UserDefaults.standard.string(forKey: "simHeading") ?? ""))
+            }
+            #endif
+            // Settings → "The guide uses: Test drive": walk street photos instead of the camera.
+            if store.testDrive, !SimDrive.shared.active {
+                let here = LocationService.shared.last.map { Coord(lat: $0.coordinate.latitude, lon: $0.coordinate.longitude) }
+                SimDrive.shared.start(at: here ?? Coord(lat: 48.1388, lon: 11.5672), heading: 90)
+            }
+            guide.start()                     // a test drive is already running: the camera stays off
             #if DEBUG
             // Test hooks: `-lookAround YES` turns the live view on; `-fakeSweep YES` turns on the spot (simulator).
             if UserDefaults.standard.bool(forKey: "lookAround") { guide.lookAround = true }
             if UserDefaults.standard.bool(forKey: "fakeSweep") { guide.startDemoSweep() }
             #endif
+            // Give the guide the walker's position now that it listens.
+            if SimDrive.shared.active { SimDrive.shared.teleport(to: SimDrive.shared.state.position) }
         }
         .sheet(isPresented: $showMap) { DestinationMapView() }
-        .onDisappear { guide.stop() }
+        .onDisappear {
+            guide.stop()
+            if SimDrive.shared.active { SimDrive.shared.stop() }
+        }
         .alert(tr("Enter destination", "Ziel eingeben"), isPresented: $typing) {
             TextField(tr("e.g. Marienplatz", "z. B. Marienplatz"), text: $typed)
             Button(tr("Go", "Los")) { guide.go(to: typed); typed = "" }
@@ -60,7 +86,8 @@ struct ImLostView: View {
 
     private var header: some View {
         HStack {
-            Label(statusText, systemImage: statusIcon)
+            Label(SimDrive.shared.active ? tr("Test drive", "Testfahrt") : statusText,
+                  systemImage: SimDrive.shared.active ? "gamecontroller.fill" : statusIcon)
                 .font(.headline)
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(.white.opacity(0.15), in: Capsule())
@@ -72,6 +99,9 @@ struct ImLostView: View {
         }
         .accessibilityElement(children: .combine)
     }
+
+    /// Street-view layout while looking around or on a test drive.
+    private var compact: Bool { guide.lookAround || SimDrive.shared.active }
 
     private var liveCaption: some View {
         Text(guide.lines.last?.text ?? tr("Turn slowly …", "Drehen Sie sich langsam …"))
@@ -87,9 +117,11 @@ struct ImLostView: View {
         HStack(spacing: 8) {
             LiveButton(title: tr("Describe", "Beschreiben"), icon: "eye.fill", color: .blue) { guide.describeAhead() }
             LiveButton(title: tr("Map", "Karte"), icon: "map.fill", color: .brown) { showMap = true }
-            LiveButton(title: tr("Stop", "Stopp"), icon: "binoculars.fill", color: .teal) {
-                guide.lookAround = false
-                Speaker.shared.say(tr("Looking around is off.", "Umschauen ist aus."))
+            LiveButton(title: guide.lookAround ? tr("Quiet", "Leise") : tr("Look", "Schauen"),
+                       icon: "binoculars.fill", color: .teal) {
+                guide.lookAround.toggle()
+                Speaker.shared.say(guide.lookAround ? tr("Turn slowly. I'll tell you what is in each direction.", "Drehen Sie sich langsam. Ich sage, was in jeder Richtung ist.")
+                                                    : tr("Looking around is off.", "Umschauen ist aus."))
             }
             LiveButton(title: tr("Help", "Hilfe"), icon: "sos", color: .red) { safety.requestHelp() }
             LiveButton(title: tr("End", "Ende"), icon: "xmark", color: .gray) { guide.requestedOpen = false }

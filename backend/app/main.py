@@ -11,10 +11,10 @@ from html import escape
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
-from . import crossings, data, guide, llm, orient
+from . import crossings, data, guide, llm, orient, streetview
 from .config import settings
 from .lang import norm, tr
 from .ladder import Contact, Incident, Ladder, Location, State, Trigger
@@ -299,6 +299,43 @@ def warnings(lat: float, lon: float, lang: str = "en") -> dict:
 def landmarks(lat: float, lon: float, radius_m: int = Query(150, ge=30, le=400), lang: str = "en") -> dict:
     """Named streets, shops, stops and entrances around the person, for camera orientation."""
     return _data(orient.landmarks, lat, lon, radius_m, lang)
+
+
+@app.get("/streetview/status")
+def streetview_status() -> dict:
+    return {"providers": streetview.providers()}
+
+
+@app.get("/drive/viewer", response_class=HTMLResponse)
+def drive_viewer(lat: float, lon: float, heading: float = 0) -> str:
+    """Walking street viewer (MapillaryJS) for the app's test drive."""
+    return streetview.viewer_page(lat, lon, heading % 360)
+
+
+@app.get("/drive/nearest")
+def drive_nearest(lat: float, lon: float, heading: float = 0, exclude: str | None = None) -> dict:
+    try:
+        return streetview.nearest(lat, lon, heading % 360, exclude)
+    except streetview.NoImagery as exc:
+        raise HTTPException(404 if settings.mapillary_token else 503, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"mapillary failed: {exc}") from exc
+
+
+@app.get("/streetview")
+def street_picture(lat: float = 0, lon: float = 0, heading: float = 0, pitch: float = Query(0, ge=-60, le=60),
+                   fov: float = Query(80, ge=30, le=120), image_id: str | None = Query(None, pattern=r"^\d{1,20}$")) -> Response:
+    """Street-level picture for the test drive (Google Street View or Mapillary; or one Mapillary picture by id)."""
+    try:
+        p = (streetview.by_id(image_id, heading % 360, fov) if image_id
+             else streetview.picture(lat, lon, heading % 360, pitch, fov))
+    except streetview.NoImagery as exc:
+        raise HTTPException(404 if streetview.providers() else 503, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"street picture failed: {exc}") from exc
+    return Response(p.jpeg, media_type="image/jpeg", headers={
+        "X-Provider": p.provider, "X-Lat": f"{p.lat:.6f}", "X-Lon": f"{p.lon:.6f}", "X-Captured": p.captured or "",
+        "Cache-Control": "no-store"})
 
 
 @app.get("/access")

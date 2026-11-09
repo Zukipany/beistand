@@ -56,6 +56,10 @@ final class AppStore {
     var obstacleWarnings: Bool {
         didSet { UserDefaults.standard.set(obstacleWarnings, forKey: "obstacleWarnings") }
     }
+    /// Testing: "I'm lost" walks real street photos (test drive) instead of using the camera and GPS.
+    var testDrive: Bool {
+        didSet { UserDefaults.standard.set(testDrive, forKey: "testDrive") }
+    }
 
     private init() {
         let d = UserDefaults.standard
@@ -65,6 +69,7 @@ final class AppStore {
         backendURL = URL(string: url)!
         demoPhoneImpactIsFall = d.bool(forKey: "demoFall")
         obstacleWarnings = d.object(forKey: "obstacleWarnings") as? Bool ?? true
+        testDrive = d.bool(forKey: "testDrive")
         if let data = d.data(forKey: "profile") {
             profile = try? JSONDecoder().decode(Profile.self, from: data)
         }

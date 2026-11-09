@@ -118,6 +118,17 @@ final class GuideController {
     private let beeper = Beeper()
     private var objectAlerts = ObjectAlerts()
     private var memory = SceneMemory()
+    /// Where the person is now (GPS or test drive), observed by the live view.
+    private(set) var position: Coord?
+    /// The next point of the route and what to do there, for the on-screen arrow.
+    var nextStep: RouteStep? {
+        guard var s = follower?.nextStep else { return nil }
+        // The last step's text is "You have arrived": while walking there, name the destination instead.
+        if follower?.nextIsFinal == true { s.instruction = tr("To \(destination ?? "the destination")", "Zu \(destination ?? "dem Ziel")") }
+        return s
+    }
+    /// The planned route, for maps.
+    var routeLine: [Coord] { follower?.line ?? [] }
     /// Latest obstacle lanes, for the on-screen indicator.
     private(set) var zones = ObstacleZones()
     private let audio = LiveAudio()
@@ -158,6 +169,7 @@ final class GuideController {
         camera.start()
         LocationService.shared.setTracking(true)
         LocationService.shared.onUpdate = { [weak self] loc in
+            self?.position = Coord(lat: loc.coordinate.latitude, lon: loc.coordinate.longitude)
             self?.maybeReloadLandmarks(loc)
             WalkRecorder.shared.log(.init(t: 0, kind: "fix", lat: loc.coordinate.latitude, lon: loc.coordinate.longitude,
                                           acc: loc.horizontalAccuracy, heading: LocationService.shared.heading))

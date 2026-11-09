@@ -9,6 +9,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     private(set) var heading: Double?          // degrees, true north if available
     private(set) var lastDescription: String?  // last spoken "Sie sind hier: …"
     var onUpdate: ((CLLocation) -> Void)?
+    /// Test drive: positions come from the virtual walker, the real GPS and compass are ignored.
+    private(set) var simulated = false
 
     override init() {
         super.init()
@@ -17,6 +19,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     }
 
     func current() async -> CLLocation? {
+        if simulated { return last }
         if manager.authorizationStatus == .notDetermined { manager.requestWhenInUseAuthorization() }
         if let last, last.timestamp.timeIntervalSinceNow > -30 { return last }
         return await withCheckedContinuation { c in
@@ -55,8 +58,20 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         return text
     }
 
+    /// Test drive: feed a position (and the way the walker faces) as if it came from GPS and the compass.
+    func inject(_ l: CLLocation, heading: Double?) {
+        simulated = true
+        self.heading = heading
+        last = l
+        waiters.forEach { $0.resume(returning: l) }
+        waiters.removeAll()
+        onUpdate?(l)
+    }
+
+    func endSimulation() { simulated = false; last = nil }
+
     func locationManager(_ m: CLLocationManager, didUpdateLocations locs: [CLLocation]) {
-        guard let l = locs.last else { return }
+        guard !simulated, let l = locs.last else { return }
         last = l
         waiters.forEach { $0.resume(returning: l) }
         waiters.removeAll()
@@ -69,6 +84,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     }
 
     func locationManager(_ m: CLLocationManager, didUpdateHeading h: CLHeading) {
+        guard !simulated else { return }
         heading = h.trueHeading >= 0 ? h.trueHeading : h.magneticHeading
     }
 

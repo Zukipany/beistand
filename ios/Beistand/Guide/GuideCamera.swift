@@ -46,7 +46,11 @@ final class GuideCamera: NSObject, ARSessionDelegate {
         if Self.hasLiDAR { arSession = ARSession() }
     }
 
+    /// Test drive: pictures and direction come from the virtual walker, not the camera.
+    var simulated = false
+
     func start() {
+        guard !simulated else { return }
         startMotion()
         guard Self.hasLiDAR else {
             fallback.onFrame = { [weak self] jpeg in
@@ -249,7 +253,57 @@ extension GuideCamera {
     }
 
     /// The camera's direction from ARKit, else the compass.
-    var heading: Double? { arHeading ?? LocationService.shared.heading }
+    var heading: Double? { simulated ? pose.heading : (arHeading ?? LocationService.shared.heading) }
+
+    // MARK: test drive input
+
+    /// A street picture from the test drive goes through the same pipeline as a camera picture.
+    func inject(jpeg: Data) {
+        latestJPEG = jpeg
+        onFrame?(jpeg)
+        readText(jpeg)
+        guard onObjects != nil, !visionBusy else { return }
+        visionBusy = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let objects = Self.detectWithoutDepth(jpeg)
+            DispatchQueue.main.async {
+                self?.visionBusy = false
+                self?.onObjects?(objects)
+            }
+        }
+    }
+
+    func inject(pose p: CameraPose) {
+        pose = p
+        onPose?(p)
+    }
+
+    /// People and prominent things in a flat picture; distance estimated from the box height
+    /// (a person is about 1.7 m tall), since there is no LiDAR in a street picture.
+    static func detectWithoutDepth(_ jpeg: Data, verticalFOV: Double = 96) -> [SeenObject] {
+        let handler = VNImageRequestHandler(data: jpeg)
+        let humans = VNDetectHumanRectanglesRequest()
+        humans.upperBodyOnly = false
+        let salient = VNGenerateObjectnessBasedSaliencyImageRequest()
+        try? handler.perform([humans, salient])
+        var out: [SeenObject] = []
+        func add(_ label: String, _ box: CGRect, height: Double) {
+            let d = Float(SimEstimate.distance(boxHeight: box.height, realHeight: height, verticalFOV: verticalFOV))
+            let side: SeenObject.Side = box.midX < 0.35 ? .left : box.midX > 0.65 ? .right : .ahead
+            out.append(SeenObject(label: label, distance: d, side: side, box: box))
+        }
+        for h in humans.results ?? [] where h.confidence > 0.5 { add("person", h.boundingBox, height: 1.7) }
+        for obj in (salient.results?.first?.salientObjects ?? []).prefix(3) where obj.boundingBox.width * obj.boundingBox.height > 0.02 {
+            let classify = VNClassifyImageRequest()
+            classify.regionOfInterest = obj.boundingBox
+            try? handler.perform([classify])
+            if let label = (classify.results ?? []).prefix(5).filter({ $0.confidence > 0.2 })
+                .compactMap({ ObjectAlerts.normalise($0.identifier) }).first(where: { $0 != "person" }) {
+                add(label, obj.boundingBox, height: label == "car" || label == "bus" || label == "tram" ? 1.6 : 1.0)
+            }
+        }
+        return out
+    }
 
     fileprivate func reorient(_ jpeg: Data, _ o: CGImagePropertyOrientation) -> Data? {
         guard let img = CIImage(data: jpeg)?.oriented(o), let cg = CIContext().createCGImage(img, from: img.extent) else { return nil }

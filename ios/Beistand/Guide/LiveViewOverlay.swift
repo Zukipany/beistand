@@ -13,6 +13,11 @@ struct LiveViewOverlay: View {
                 if let h = guide.pose.heading, let here = here {
                     placeLabels(geo.size, heading: h, here: here)
                     destination(geo.size, heading: h, here: here)
+                    if let step = guide.nextStep {
+                        nextPoint(geo.size, step: step, heading: h, here: here)
+                        NextTurnCard(step: step, heading: h, here: here)
+                            .position(x: geo.size.width / 2, y: geo.size.height * 0.335)
+                    }
                 }
                 VStack(spacing: 8) {
                     CompassStrip(heading: guide.pose.heading, destinationBearing: destinationBearing, exact: guide.pose.fromCamera)
@@ -31,7 +36,7 @@ struct LiveViewOverlay: View {
     }
 
     private var here: Coord? {
-        LocationService.shared.last.map { Coord(lat: $0.coordinate.latitude, lon: $0.coordinate.longitude) }
+        guide.position ?? LocationService.shared.last.map { Coord(lat: $0.coordinate.latitude, lon: $0.coordinate.longitude) }
     }
 
     private var destinationBearing: Double? {
@@ -80,14 +85,25 @@ struct LiveViewOverlay: View {
                     Image(systemName: "mappin").font(.system(size: 54, weight: .bold)).foregroundStyle(.red)
                         .shadow(radius: 4)
                 }
-                .position(x: size.width * (0.5 + rel / Orientation.fieldOfView), y: size.height * 0.36)
+                .position(x: size.width * (0.5 + rel / Orientation.fieldOfView), y: size.height * 0.40)
             } else {
                 // Off screen: an arrow at the edge telling which way to turn.
                 Label("\(name) · \(metres) m", systemImage: rel < 0 ? "arrow.left.circle.fill" : "arrow.right.circle.fill")
                     .font(.title3.bold()).padding(10)
                     .background(.red, in: Capsule())
-                    .position(x: rel < 0 ? 110 : size.width - 110, y: size.height * 0.36)
+                    .position(x: rel < 0 ? 110 : size.width - 110, y: size.height * 0.40)
             }
+        }
+    }
+
+    /// A green marker where the next route point is, so the path shows in the picture.
+    @ViewBuilder
+    private func nextPoint(_ size: CGSize, step: RouteStep, heading: Double, here: Coord) -> some View {
+        let rel = Orientation.relative(Geo.bearing(here, step.coord), heading: heading)
+        if abs(rel) <= Orientation.fieldOfView / 2 {
+            Image(systemName: "chevron.up.2").font(.system(size: 46, weight: .black)).foregroundStyle(.green)
+                .shadow(color: .black, radius: 3)
+                .position(x: size.width * (0.5 + rel / Orientation.fieldOfView), y: size.height * 0.47)
         }
     }
 
@@ -229,5 +245,35 @@ struct CompassStrip: View {
 private struct Triangle: Shape {
     func path(in r: CGRect) -> Path {
         Path { p in p.move(to: CGPoint(x: r.midX, y: r.maxY)); p.addLine(to: CGPoint(x: r.minX, y: r.minY)); p.addLine(to: CGPoint(x: r.maxX, y: r.minY)); p.closeSubpath() }
+    }
+}
+
+
+/// "Next: Turn right onto Kaufingerstraße · 34 m" with an arrow that points to that place
+/// as the person turns, so the way is shown, not only spoken.
+struct NextTurnCard: View {
+    let step: RouteStep
+    let heading: Double
+    let here: Coord
+
+    var body: some View {
+        let rel = Orientation.relative(Geo.bearing(here, step.coord), heading: heading)
+        let metres = Int(Geo.distance(here, step.coord).rounded())
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.up").font(.system(size: 30, weight: .black))
+                .rotationEffect(.degrees(rel))
+                .frame(width: 44, height: 44)
+                .background(.green, in: Circle())
+            VStack(alignment: .leading, spacing: 0) {
+                Text(step.instruction).font(.headline).lineLimit(2)
+                Text("\(metres) m · \(Orientation.words(rel))").font(.subheadline).opacity(0.9)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.green, lineWidth: 2))
+        .padding(.horizontal, 16)
+        .foregroundStyle(.white)
     }
 }

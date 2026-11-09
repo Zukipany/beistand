@@ -177,3 +177,20 @@ Target: hackaTUM 27–29 Nov 2026 – older people mode + safety layer fully, si
 - Verified: 30 backend tests, all app tests, simulator: map pin at Marienplatz (4 lifts, step-free), route + simulated
   walk from Stachus, live view with real OSM places. Installed on the iPhone 16 Pro.
   NOT verified: ARKit heading and OCR outdoors on the real phone.
+
+## Test drive (9 Nov 2026)
+- `Core/SimDrive.swift`: virtual walker (`WalkerPhysics`, 1.4 m/s, ×4 with Shift, 90°/s turns), injected into
+  `LocationService.inject` and `GuideCamera.inject(pose:/jpeg:)`, so the real guide pipeline runs (route, live view,
+  OCR, people with distance from box height). Controls: `SimDriveControls` (two sticks, W A S D / arrows / Q E / R F,
+  mini-map with route, tap to jump).
+- Pictures: `MAPILLARY_TOKEN` → MapillaryJS 4.1.2 walking viewer from `/drive/viewer` in a WKWebView; sticks/keys call
+  `drive.step/turn/look`, the page reports `image/position/bearing` back; recognition uses `/streetview?image_id=` cut to
+  the heading. `GOOGLE_MAPS_API_KEY` → still Street View Static pictures per spot/heading. No key → grey street + note.
+- Street View is panoramas every few metres, never video; MapillaryJS animates between them (3D glide ~1 s).
+- Verified: 36 backend tests, app tests (walker, viewer input/events), simulator drive without key, MapillaryJS page and
+  API in a browser. NOT verified: real Mapillary pictures (no token yet).
+- Later the same evening: Settings → "The guide uses: Camera and GPS / Test drive (street photos)" (`AppStore.testDrive`).
+  Walking viewer keeps the walker's own direction (`want`): each step picks the best photo 4-14 m that way via
+  `/drive/nearest?exclude=` (within 30°), Mapillary's own links only as fallback; re-faces after each glide (`moveend`).
+  Next-turn card + green chevrons (`RouteFollower.nextStep`). Verified with a real token: Neuhauser Straße → Kapellenstraße
+  walking east, 640 → 531 m, still facing east.

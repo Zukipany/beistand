@@ -399,3 +399,78 @@ def test_osm_map_api_shaped_like_overpass():
     assert [e["id"] for e in els] == [3, 9]
     assert els[1]["geometry"] == [{"lat": 48.1, "lon": 11.5}, {"lat": 48.1, "lon": 11.501}]
     assert orient.is_landmark(els[1]["tags"]) and not orient.is_landmark(els[0]["tags"])
+
+
+# --------------------------------------------------------------------------- test drive street pictures
+
+def test_streetview_pick_prefers_near_and_facing():
+    from app import streetview
+    here = (48.1374, 11.5755)
+    def img(i, lat, lon, angle=None, pano=False):
+        return {"id": i, "geometry": {"coordinates": [lon, lat]}, "computed_compass_angle": angle, "is_pano": pano}
+    ims = [img("behind", 48.13741, 11.57551, angle=180),          # right here but looking the wrong way
+           img("ahead", 48.13750, 11.57550, angle=10),            # 11 m away, looking north
+           img("far", 48.1380, 11.5755, angle=0)]
+    assert streetview.pick(ims, here, 0)["id"] == "ahead"
+    assert streetview.pick(ims, here, 180)["id"] == "behind"
+    assert streetview.pick(ims + [img("pano", 48.13742, 11.5755, pano=True)], here, 90)["id"] == "pano"
+    assert streetview.pick([img("x", 48.1374, 11.5755, angle=None)], here, 0) is None
+
+
+def test_streetview_pano_crop_wraps():
+    from app import streetview
+    x0, y0, w, h = streetview.pano_crop(3600, 1800, heading=90, pano_angle=90, fov=80)
+    assert w == 800 and x0 == 1400 and h == 1066 and 0 <= y0 < 1800 - h + 1    # centre of the panorama
+    x0, *_ = streetview.pano_crop(3600, 1800, heading=270, pano_angle=90, fov=80)
+    assert x0 == 3200                                                            # behind: crosses the seam
+
+
+def test_streetview_crop_pastes_both_sides_of_seam():
+    import io
+    from PIL import Image
+    from app import streetview
+    img = Image.new("RGB", (100, 50), (255, 0, 0))
+    img.paste((0, 0, 255), (90, 0, 100, 50))                    # right edge blue
+    buf = io.BytesIO(); img.save(buf, "JPEG")
+    out = Image.open(io.BytesIO(streetview._crop(buf.getvalue(), (90, 0, 20, 40))))
+    assert out.size == (20, 40)
+    r, g, b = out.getpixel((2, 20)); assert b > 200 and r < 60     # from the right edge
+    r, g, b = out.getpixel((17, 20)); assert r > 200 and b < 60    # wrapped to the left edge
+
+
+def test_streetview_without_key_is_503(monkeypatch):
+    from app import streetview
+    from app.main import app
+    monkeypatch.setattr(streetview, "providers", lambda: [])
+    r = TestClient(app).get("/streetview", params={"lat": 48.1, "lon": 11.5, "heading": 0})
+    assert r.status_code == 503 and "MAPILLARY_TOKEN" in r.json()["detail"]
+
+
+def test_drive_viewer_page_and_nearest(monkeypatch):
+    from app import streetview
+    from app.main import app
+    c = TestClient(app)
+    page = c.get("/drive/viewer", params={"lat": 48.1374, "lon": 11.5755, "heading": 90}).text
+    assert "mapillary-js@4.1.2" in page and "[48.1374, 11.5755, 90.0]" in page
+    assert "messageHandlers.drive" in page and "NavigationDirection" in page
+
+    class R:
+        def __init__(self, j): self._j = j
+        def raise_for_status(self): pass
+        def json(self): return self._j
+    calls = []
+    def fake_get(url, params=None, **kw):
+        calls.append(params["bbox"])
+        if len(calls) == 1:
+            return R({"data": []})                                  # nothing within 50 m …
+        return R({"data": [{"id": "123", "geometry": {"coordinates": [11.5757, 48.1376]}, "is_pano": True}]})
+    monkeypatch.setattr(streetview, "settings", type("S", (), {"mapillary_token": "t", "google_maps_api_key": ""})())
+    monkeypatch.setattr(streetview.httpx, "get", fake_get)
+    r = c.get("/drive/nearest", params={"lat": 48.1374, "lon": 11.5755, "heading": 0})
+    assert r.status_code == 200 and r.json() == {"id": "123", "lat": 48.1376, "lon": 11.5757, "is_pano": True}
+    assert len(calls) == 2                                          # … so it looked within 200 m
+
+
+def test_streetview_rejects_bad_image_id():
+    from app.main import app
+    assert TestClient(app).get("/streetview", params={"image_id": "../x"}).status_code == 422

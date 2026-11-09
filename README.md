@@ -89,6 +89,8 @@ Sign-up asks **what is hard, never for a diagnosis**. The app talks from the fir
 | Sound alerts (siren, alarm, horn, doorbell, knock, baby, dog, shout) on phone and watch | 🧪 | On-phone SoundAnalysis; big named card, vibration pattern per sound, watch tap. Also inside live captions. Simulated alert verified; real sounds pending. |
 | Counter mode (phone flat between two people, staff side upside down) | ✅ / 🧪 | Captions of the staff, typed text shown and spoken; on-phone translation both ways on iOS 26. |
 | Live street view ("Look around"): compass strip, places floating in their real direction, destination pin, live boxes for people, objects and read signs | 🧪 | Heading from ARKit (gravity + true north), works however the phone is held; spoken sweep "Facing east. Ahead: …". Works without any AI key. Simulator verified with a simulated turn; real camera pending. |
+| Test drive: walk real streets from a desk (W A S D / arrows / on-screen sticks, mini-map, tap to jump) | ✅ / 🔑 | Feeds the guide's GPS, compass and camera, so route following, live view, sign reading and people detection run as outside. With `MAPILLARY_TOKEN`: Mapillary's walking viewer (animated steps between photos). With `GOOGLE_MAPS_API_KEY`: still Street View pictures. Settings → "The guide uses: Test drive" makes "I'm lost" always start one (or Diagnostics → Test drive). |
+| Next-turn card and path markers in the live view | ✅ | Instruction, distance and an arrow that turns with the person; green chevrons where the next route point is. Camera and test drive. |
 | Choose destination on a map (search or drop a pin) with accessibility card | ✅ | Step-free, lifts, entrances, accessible toilets, steps, tactile paving from OpenStreetMap; "Take me there" starts the guide. |
 | "What's in front of me?" without an AI key | ✅ | Compass + map + signs the phone reads + LiDAR; with a key, the AI gets the nearby places as facts. |
 | Guide asks: "next departures", "where was the bench?" | ✅ | Live MVG departures (also a button in simple mode); a 3-minute memory of what the camera recognised. |
@@ -233,6 +235,8 @@ Every key is optional: a missing key switches that feature to an offline or dry-
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` | Real texts and calls to the emergency contact | [console.twilio.com](https://console.twilio.com) |
 | `DB_CLIENT_ID`, `DB_API_KEY` | Lift status at stations (DB FaSta) | [developers.deutschebahn.com](https://developers.deutschebahn.com) |
 | `ORS_API_KEY` | OpenRouteService routes (Valhalla is used without it) | [openrouteservice.org](https://openrouteservice.org) |
+| `MAPILLARY_TOKEN` | Test drive in Mapillary's walking viewer; pictures may be used for recognition (CC BY-SA) | [mapillary.com/dashboard/developers](https://www.mapillary.com/dashboard/developers) |
+| `GOOGLE_MAPS_API_KEY` | Test drive with Google Street View still pictures (display; recognition only for local testing) | [console.cloud.google.com](https://console.cloud.google.com) → Street View Static API |
 | `PUBLIC_BASE_URL` | The address the contact opens from the SMS; use a tunnel (ngrok, Cloudflare) for a demo | – |
 
 Model names are settings, too: `ANTHROPIC_MODEL` (default `claude-opus-5-5`), `GEMINI_LIVE_MODEL` (default `gemini-3.8-live`), `GEMINI_VISION_MODEL`.
@@ -508,6 +512,7 @@ Pass them after the bundle id: `xcrun simctl launch <device> app.beistand.ios -o
 | `-openSounds YES -testSound siren` | Open sound alerts and raise a test alert after 2 s |
 | `-openCounter YES` | Open counter mode |
 | `-openMap YES -dropPin 48.1372,11.5755` | Open the destination map with a pin and its accessibility card |
+| `-openGuide YES -simDrive YES -simStart 48.1388,11.5672 -simHeading 90` | Test drive from Neuhauser Straße, facing east |
 | `-openGuide YES -lookAround YES -fakeSweep YES` | Live street view, turning slowly on the spot (simulator has no compass) |
 | `-fakeVolume 0.2` | Pretend the phone is quiet |
 | Watch: `-watchAction ok\|help\|fall` | The watch presses that button 3 s after connecting |
