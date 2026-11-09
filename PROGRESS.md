@@ -164,3 +164,16 @@ Target: hackaTUM 27–29 Nov 2026 – older people mode + safety layer fully, si
 - Debug hooks: `-openSounds YES [-testSound siren]`, `-openCounter YES`.
 - Verified: backend tests (23), app unit tests, simulator: siren card, counter mode layout, live departures at Marienplatz.
   NOT verified: real sounds on the iPhone, translation on device, watch sound card on a real watch.
+
+## Live street view, map destination, accessibility data (9 Nov 2026)
+- Backend `app/orient.py`: `/landmarks` (named shops, stops, U-Bahn entrances, sights, streets with direction) and
+  `/access` (step-free, lifts, entrances, accessible toilets, steps without ramp, kerbs, tactile paving; missing = unknown).
+  Data: Overpass first (8 s), else the OSM map API for the small box (public Overpass now refuses many app requests).
+  `/describe` takes `nearby` map facts so the AI names real places. Researched: no open MVG lift API; DB FaSta for DB stations.
+- App: `Guide/Orientation.swift` (directions, clock, sweep policy, phone hold → image orientation, camera aim), camera heading
+  from ARKit `.gravityAndHeading`, pictures turned the way the phone is held, on-phone sign reading (Vision OCR),
+  `LiveViewOverlay` (compass strip, place tags in rows, destination pin/arrow, recognition boxes), compact live controls,
+  `DestinationMapView` (search, long-press pin, accessibility card, Take me there → route, accessibility said on arrival).
+- Verified: 30 backend tests, all app tests, simulator: map pin at Marienplatz (4 lifts, step-free), route + simulated
+  walk from Stachus, live view with real OSM places. Installed on the iPhone 16 Pro.
+  NOT verified: ARKit heading and OCR outdoors on the real phone.

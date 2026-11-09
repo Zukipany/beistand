@@ -29,6 +29,17 @@ enum GuideAPI {
         let crossings: [Item]
     }
     struct Described: Decodable { let spoken: String }
+    struct Landmarks: Decodable { let data: [Landmark] }
+    struct Access: Decodable {
+        struct Data: Decodable {
+            struct Elevator: Decodable { let distance_m: Int; let level: String?; let wheelchair: String? }
+            struct Place: Decodable { let name: String; let wheelchair: String? }
+            let place: Place?
+            let elevators: [Elevator]
+            let spoken: String
+        }
+        let data: Data
+    }
 
     static func get<T: Decodable>(_ path: String, _ query: [String: String] = [:]) async throws -> T {
         var c = URLComponents(url: AppStore.shared.backendURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
@@ -85,6 +96,23 @@ final class GuideController {
     var requestedOpen = false          // set by the App Intent / Action Button
     var destination: String?
     var listening = false
+    /// Where the destination pin is, for the live view's arrow.
+    var destinationCoord: Coord?
+    /// What the map says about the destination's accessibility (lifts, step-free, toilets).
+    var destinationAccess: String?
+
+    // Live view ("look around"): the camera picture with places and recognised things on top.
+    var lookAround = false { didSet { sweep.reset(); saidSigns = [] } }
+    private(set) var pose = CameraPose()
+    private(set) var signs: [SeenText] = []
+    private(set) var liveObjects: [SeenObject] = []
+    private(set) var landmarks: [Landmark] = []
+    private var landmarksAt: Coord?
+    private var sweep = SweepPolicy()
+    private var saidSigns: Set<String> = []
+    private var lastAimHint = Date.distantPast
+    /// Destination chosen on the map before the guide was open.
+    private var pending: GuideAPI.Place?
 
     let camera = GuideCamera()
     private let beeper = Beeper()
@@ -123,10 +151,14 @@ final class GuideController {
         memory = SceneMemory()
         camera.onZones = { [weak self] z in self?.obstaclesChanged(z) }
         camera.onObjects = { [weak self] objects in self?.objectsSeen(objects) }
+        camera.onPose = { [weak self] p in self?.poseChanged(p) }
+        camera.onText = { [weak self] t in self?.textSeen(t) }
+        Task { await loadLandmarks() }
         WalkRecorder.shared.begin()
         camera.start()
         LocationService.shared.setTracking(true)
         LocationService.shared.onUpdate = { [weak self] loc in
+            self?.maybeReloadLandmarks(loc)
             WalkRecorder.shared.log(.init(t: 0, kind: "fix", lat: loc.coordinate.latitude, lon: loc.coordinate.longitude,
                                           acc: loc.horizontalAccuracy, heading: LocationService.shared.heading))
             self?.moved(loc)
@@ -141,10 +173,19 @@ final class GuideController {
             } catch {
                 startSimple(context: context)
             }
+            if let p = pending {
+                pending = nil
+                try? await Task.sleep(for: .seconds(mode == .simple ? 4 : 2))   // after the greeting
+                await routeToChosen(p)
+            }
         }
     }
 
     func stop() {
+        lookAround = false
+        #if DEBUG
+        demoTimer?.invalidate(); demoTimer = nil
+        #endif
         liveToken = nil; livePrompt = nil; resumeHandle = nil; resume = ResumePolicy(); reconnects = 0
         client.close()
         audio.stop()
@@ -292,13 +333,17 @@ final class GuideController {
         Task {
             var body: [String: Any] = ["image_b64": jpeg.base64EncodedString(), "lang": Lang.code]
             body["address"] = LocationService.shared.lastDescription
-            if let h = LocationService.shared.heading { body["heading"] = h }
+            if let h = camera.heading { body["heading"] = h }
             if let question { body["question"] = question }
+            if let here = hereCoord, !landmarks.isEmpty {
+                body["nearby"] = Orientation.grounding(landmarks, here: here, heading: camera.heading)
+            }
             do {
                 let d: GuideAPI.Described = try await GuideAPI.post("describe", body)
                 say(d.spoken)
             } catch {
-                say(tr("I can't describe the picture right now.", "Ich kann das Bild gerade nicht beschreiben."))
+                // No AI key or no network: what the phone knows by itself (map, compass, signs, LiDAR).
+                say(offlineDescription())
             }
             status = tr("Simple mode", "Einfacher Modus")
         }
@@ -336,6 +381,23 @@ final class GuideController {
         Task { _ = await planRoute(to: destination) }
     }
 
+    /// A pin dropped on the map.
+    func go(to pin: Coord, name: String) {
+        let place = GuideAPI.Place(name: name, address: nil, lat: pin.lat, lon: pin.lon)
+        guard mode == .live || mode == .simple else { pending = place; return }
+        Task { await routeToChosen(place) }
+    }
+
+    private func routeToChosen(_ place: GuideAPI.Place) async {
+        let r = await planRoute(to: place)
+        if mode == .live {
+            tell(forGuide: tr("The person chose \(place.name) on the map. Route: ", "Die Person hat \(place.name) auf der Karte gewählt. Weg: ")
+                 + "\(r["distance_m"] ?? "?") m, \(r["first_instruction"] ?? ""). " + (destinationAccess ?? ""), forPerson: nil)
+        } else if r["ok"] as? Bool != true, let m = r["message"] as? String {
+            say(m)
+        }
+    }
+
     // MARK: tools
 
     private func runTool(name: String, args: [String: String]) async -> [String: Any] {
@@ -370,6 +432,23 @@ final class GuideController {
                 return ["ok": false, "message": tr("I can't find \(destination). Can you say it differently?",
                                                    "Ich finde \(destination) nicht. Können Sie es anders sagen?")]
             }
+            return await planRoute(to: place, from: p)
+        } catch {
+            log.error("geocode failed: \(error.localizedDescription)")
+            return ["ok": false, "message": tr("I can't plan a route right now.", "Ich kann gerade keinen Weg planen.")]
+        }
+    }
+
+    @discardableResult
+    func planRoute(to place: GuideAPI.Place, from start: Coord? = nil) async -> [String: Any] {
+        var start = start
+        if start == nil, let here = await LocationService.shared.current() {
+            start = Coord(lat: here.coordinate.latitude, lon: here.coordinate.longitude)
+        }
+        guard let p = start else {
+            return ["ok": false, "message": tr("I don't know the location right now.", "Ich kenne den Standort gerade nicht.")]
+        }
+        do {
             // Blind: landmark-style instructions; wheelchair: no steps; otherwise walking that avoids steps.
             let profile = AppStore.shared.has(.wheelchair) ? "wheelchair" : AppStore.shared.has(.sight) ? "blind" : "foot-walking"
             let route: GuideAPI.Route = try await GuideAPI.get("route", [
@@ -378,6 +457,9 @@ final class GuideController {
                                      line: route.geometry.map { Coord(lat: $0[1], lon: $0[0]) })
             follower?.crossings = route.crossings ?? []
             self.destination = place.name
+            self.destinationCoord = Coord(lat: place.lat, lon: place.lon)
+            self.destinationAccess = nil
+            Task { await loadAccess(place) }
             lastReplan = Date()
             let first = follower?.firstInstruction ?? ""
             let summary = tr("Route to \(place.name), about \(Int(route.distance_m)) metres. \(first)",
@@ -481,6 +563,7 @@ final class GuideController {
     }
 
     private func objectsSeen(_ objects: [SeenObject]) {
+        liveObjects = objects
         guard !objects.isEmpty else { return }
         let here = LocationService.shared.last.map { Coord(lat: $0.coordinate.latitude, lon: $0.coordinate.longitude) }
         memory.add(objects, at: ProcessInfo.processInfo.systemUptime, position: here)
@@ -528,7 +611,11 @@ final class GuideController {
                               "Die Person ist etwa \(Int(metres)) Meter vom Weg abgekommen. Ich plane neu."),
                  forPerson: tr("You are about \(Int(metres)) metres off the route. I'm planning it again.",
                                "Sie sind etwa \(Int(metres)) Meter vom Weg abgekommen. Ich plane den Weg neu."))
-            Task { _ = await planRoute(to: dest) }
+            if let c = destinationCoord {
+                Task { _ = await planRoute(to: GuideAPI.Place(name: dest, address: nil, lat: c.lat, lon: c.lon)) }
+            } else {
+                Task { _ = await planRoute(to: dest) }
+            }
         case .crossing(let text)?:
             Haptics.pulses(1)
             tell(forGuide: tr("Tell the person now, in your own words: \(text) Do not say whether it is safe to cross.",
@@ -538,7 +625,8 @@ final class GuideController {
             Haptics.arrived()
             tell(forGuide: tr("The person has arrived at \(f.destinationName). Tell them and describe what you see.",
                               "Die Person ist am Ziel \(f.destinationName) angekommen. Sag es ihr und beschreibe, was du siehst."),
-                 forPerson: tr("You have arrived: \(f.destinationName).", "Sie sind angekommen: \(f.destinationName)."))
+                 forPerson: tr("You have arrived: \(f.destinationName).", "Sie sind angekommen: \(f.destinationName).")
+                    + (destinationAccess.map { " " + $0 } ?? ""))
             follower = nil
         case nil:
             // Keep the guide up to date without making it talk.
@@ -576,6 +664,130 @@ final class GuideController {
         }
         listener.stop()
     }
+
+    // MARK: live view (look around)
+
+    private var hereCoord: Coord? {
+        LocationService.shared.last.map { Coord(lat: $0.coordinate.latitude, lon: $0.coordinate.longitude) }
+    }
+
+    /// Named places around, once per ~60 m.
+    func loadLandmarks() async {
+        guard let loc = await LocationService.shared.current() else { return }
+        let here = Coord(lat: loc.coordinate.latitude, lon: loc.coordinate.longitude)
+        landmarksAt = here
+        if let r: GuideAPI.Landmarks = try? await GuideAPI.get("landmarks", ["lat": "\(here.lat)", "lon": "\(here.lon)", "lang": Lang.code]) {
+            landmarks = r.data
+        }
+    }
+
+    private func maybeReloadLandmarks(_ loc: CLLocation) {
+        let p = Coord(lat: loc.coordinate.latitude, lon: loc.coordinate.longitude)
+        guard let at = landmarksAt, Geo.distance(at, p) > 60 else { return }
+        landmarksAt = p
+        Task { await loadLandmarks() }
+    }
+
+    func loadAccess(_ place: GuideAPI.Place) async {
+        if let a: GuideAPI.Access = try? await GuideAPI.get("access", ["lat": "\(place.lat)", "lon": "\(place.lon)",
+                                                                      "name": place.name, "lang": Lang.code]) {
+            destinationAccess = a.data.spoken
+        }
+    }
+
+    private func poseChanged(_ p: CameraPose) {
+        #if DEBUG
+        if demoTimer != nil { return }
+        #endif
+        pose = p
+        guard lookAround else { return }
+        if let hint = CameraAim.hint(pitch: p.pitch), Date().timeIntervalSince(lastAimHint) > 6 {
+            lastAimHint = Date()
+            Speaker.shared.say(hint, interrupt: true)
+            return
+        }
+        guard CameraAim.hint(pitch: p.pitch) == nil, let h = p.heading, let here = hereCoord,
+              let dir = sweep.feed(heading: h, at: ProcessInfo.processInfo.systemUptime) else { return }
+        let text = Orientation.sentence(heading: dir, here: here, landmarks: landmarks, signs: signs.map(\.text))
+        if mode == .live {
+            tell(forGuide: tr("The person is looking around. The map says: ", "Die Person schaut sich um. Die Karte sagt: ") + text,
+                 forPerson: nil, respond: false)
+        }
+        Speaker.shared.say(text, interrupt: true)
+        appendText(text, fromGuide: true)
+    }
+
+    private func textSeen(_ t: [SeenText]) {
+        signs = t
+        guard lookAround, let here = hereCoord else { return }
+        for (sign, l) in Orientation.matchSigns(t.map(\.text), landmarks: landmarks) where !saidSigns.contains(l.id) {
+            saidSigns.insert(l.id)
+            let d = Int(Geo.distance(here, l.coord).rounded())
+            let text = tr("I can read \"\(sign)\": \(l.name), \(l.kind), \(d) metres.",
+                          "Ich lese „\(sign)“: \(l.name), \(l.kind), \(d) Meter.")
+            Speaker.shared.say(text, interrupt: false)
+            appendText(text, fromGuide: true)
+            return
+        }
+    }
+
+    /// "What's in front of me?" without any AI: compass, map, signs the phone read, LiDAR.
+    func offlineDescription() -> String {
+        var parts: [String] = []
+        if let hint = CameraAim.hint(pitch: pose.pitch) { parts.append(hint) }
+        if let c = zones.centre, c < 3 {
+            parts.append(tr("Something is in your way, \(String(format: "%.1f", c)) metres ahead.",
+                            "Etwas ist im Weg, \(String(format: "%.1f", c)) Meter vor Ihnen."))
+        }
+        for o in liveObjects.sorted(by: { $0.distance < $1.distance }).prefix(2) where o.label != "obstacle" {
+            parts.append(ObjectAlerts.phrase(o))
+        }
+        if let h = camera.heading, let here = hereCoord {
+            parts.append(Orientation.sentence(heading: h, here: here, landmarks: landmarks, signs: signs.map(\.text)))
+        } else if let d = LocationService.shared.lastDescription {
+            parts.append(d)
+        }
+        let unmatched = signs.map(\.text).filter { s in Orientation.matchSigns([s], landmarks: landmarks).isEmpty }.prefix(3)
+        if !unmatched.isEmpty {
+            parts.append(tr("Text I can read: ", "Text, den ich lesen kann: ") + unmatched.joined(separator: ", ") + ".")
+        }
+        return parts.isEmpty ? tr("I can't see anything useful. Hold the phone upright and turn slowly.",
+                                  "Ich sehe nichts Hilfreiches. Halten Sie das Telefon aufrecht und drehen Sie sich langsam.")
+                             : parts.joined(separator: " ")
+    }
+
+    #if DEBUG
+    private var demoTimer: Timer?
+    /// Simulator: no camera or compass, so turn slowly on the spot and pretend to see a few things.
+    func startDemoSweep() {
+        demoTimer?.invalidate()
+        var h = UserDefaults.standard.double(forKey: "fakeHeading")
+        demoTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                h = (h + 1.2).truncatingRemainder(dividingBy: 360)
+                let t = ProcessInfo.processInfo.systemUptime
+                // Pause every 45° so the sweep logic speaks.
+                let still = Int(t * 5) % 25 > 12
+                if still { h -= 1.2 }
+                self.pose = CameraPose(heading: h, pitch: -5, hold: .portrait, fromCamera: true)
+                self.liveObjects = [
+                    SeenObject(label: "person", distance: 3.2, side: .ahead, box: CGRect(x: 0.42, y: 0.25, width: 0.16, height: 0.45)),
+                    SeenObject(label: "bicycle", distance: 2.1, side: .left, box: CGRect(x: 0.05, y: 0.2, width: 0.25, height: 0.22)),
+                ]
+                self.zones = ObstacleZones(left: 2.1, centre: 3.2, right: nil)
+                if self.signs.isEmpty, let l = self.landmarks.first(where: { !$0.isStreet }) {
+                    self.signs = [SeenText(text: l.name.uppercased(), box: CGRect(x: 0.6, y: 0.7, width: 0.3, height: 0.06))]
+                }
+                guard self.lookAround, let here = self.hereCoord,
+                      let dir = self.sweep.feed(heading: h, at: t) else { return }
+                let text = Orientation.sentence(heading: dir, here: here, landmarks: self.landmarks)
+                Speaker.shared.say(text, interrupt: true)
+                self.appendText(text, fromGuide: true)
+            }
+        }
+    }
+    #endif
 
     // MARK: helpers
 

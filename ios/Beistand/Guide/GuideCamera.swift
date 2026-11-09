@@ -1,5 +1,6 @@
 import ARKit
 import CoreImage
+import CoreMotion
 import SwiftUI
 import UIKit
 import Vision
@@ -14,7 +15,18 @@ final class GuideCamera: NSObject, ARSessionDelegate {
     var onFrame: ((Data) -> Void)?
     var onZones: ((ObstacleZones) -> Void)?
     var onObjects: (([SeenObject]) -> Void)?
+    /// Where the camera points and how the phone is held, about 5 times per second.
+    var onPose: ((CameraPose) -> Void)?
+    /// Text the phone reads in the picture (shop and street signs), about once per second.
+    var onText: (([SeenText]) -> Void)?
     private(set) var latestJPEG: Data?
+    private(set) var pose = CameraPose()
+
+    private let motion = CMMotionManager()
+    private var hold: PhoneHold = .portrait
+    private var arHeading: Double?
+    private var lastPose = Date.distantPast
+    private var textBusy = false
 
     let fallback = CameraFeed()
     private(set) var arSession: ARSession?
@@ -35,10 +47,18 @@ final class GuideCamera: NSObject, ARSessionDelegate {
     }
 
     func start() {
+        startMotion()
         guard Self.hasLiDAR else {
             fallback.onFrame = { [weak self] jpeg in
-                self?.latestJPEG = jpeg
-                self?.onFrame?(jpeg)
+                guard let self else { return }
+                // The feed is already portrait; turn it if the phone is held sideways or upside down.
+                let o = self.hold.portraitBufferOrientation
+                let out = o == .up ? jpeg : (self.reorient(jpeg, o) ?? jpeg)
+                DispatchQueue.main.async {
+                    self.latestJPEG = out
+                    self.onFrame?(out)
+                }
+                self.readText(out)
             }
             fallback.start()
             return
@@ -48,12 +68,16 @@ final class GuideCamera: NSObject, ARSessionDelegate {
         session.delegateQueue = queue
         arSession = session
         let config = ARWorldTrackingConfiguration()
+        // World axes: -z = true north, x = east. The camera's own direction then gives the heading,
+        // however the phone is held (the compass alone gets confused when the phone is upright).
+        config.worldAlignment = .gravityAndHeading
         config.frameSemantics = [.sceneDepth]
         config.planeDetection = [.horizontal]
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
     }
 
     func stop() {
+        motion.stopDeviceMotionUpdates()
         arSession?.pause()
         fallback.stop()
         floorY = nil
@@ -63,6 +87,11 @@ final class GuideCamera: NSObject, ARSessionDelegate {
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         let now = Date()
+        if case .normal = frame.camera.trackingState {
+            let t = frame.camera.transform
+            let f = -SIMD3<Float>(t.columns.2.x, t.columns.2.y, t.columns.2.z)
+            if abs(f.y) < 0.95 { arHeading = (Double(atan2(f.x, -f.z)) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360) }
+        }
         if now.timeIntervalSince(lastDepth) >= 0.1 {
             lastDepth = now
             let zones = obstacleZones(frame)
@@ -75,6 +104,7 @@ final class GuideCamera: NSObject, ARSessionDelegate {
                     self.latestJPEG = jpeg
                     self.onFrame?(jpeg)
                 }
+                readText(jpeg)
             }
         }
         if now.timeIntervalSince(lastObjects) >= 0.5, !visionBusy {
@@ -157,7 +187,8 @@ final class GuideCamera: NSObject, ARSessionDelegate {
     /// People and the most prominent objects, named by Apple's image classifier, with LiDAR distance.
     private func detectObjects(_ frame: ARFrame) -> [SeenObject] {
         let image = frame.capturedImage
-        let handler = VNImageRequestHandler(cvPixelBuffer: image, orientation: .right)   // phone held upright
+        let orientation = hold.rawOrientation
+        let handler = VNImageRequestHandler(cvPixelBuffer: image, orientation: orientation)
         let humans = VNDetectHumanRectanglesRequest()
         humans.upperBodyOnly = false
         let salient = VNGenerateObjectnessBasedSaliencyImageRequest()
@@ -165,11 +196,11 @@ final class GuideCamera: NSObject, ARSessionDelegate {
 
         var out: [SeenObject] = []
         func add(_ label: String, _ box: CGRect) {
-            // Vision boxes: portrait image, origin bottom-left. Depth image: sensor landscape, origin top-left.
-            let u = 1 - box.midY, v = 1 - box.midX
+            // Vision boxes: the picture as the person holds it, origin bottom-left. Depth: sensor landscape, origin top-left.
+            let (u, v) = PhoneHold.rawPoint(orientation, x: box.midX, y: box.midY)
             guard let d = depthAt(frame, u: u, v: v) else { return }
             let side: SeenObject.Side = box.midX < 0.35 ? .left : box.midX > 0.65 ? .right : .ahead
-            out.append(SeenObject(label: label, distance: d, side: side))
+            out.append(SeenObject(label: label, distance: d, side: side, box: box))
         }
         for h in humans.results ?? [] where h.confidence > 0.5 { add("person", h.boundingBox) }
 
@@ -191,12 +222,84 @@ final class GuideCamera: NSObject, ARSessionDelegate {
     // MARK: pictures for the guide
 
     private func jpeg(_ pixels: CVPixelBuffer) -> Data? {
-        var img = CIImage(cvPixelBuffer: pixels).oriented(.right)
+        var img = CIImage(cvPixelBuffer: pixels).oriented(hold.rawOrientation)
         let scale = 768 / max(img.extent.width, img.extent.height)
         if scale < 1 { img = img.transformed(by: CGAffineTransform(scaleX: scale, y: scale)) }
         guard let cg = ci.createCGImage(img, from: img.extent) else { return nil }
         return UIImage(cgImage: cg).jpegData(compressionQuality: 0.6)
     }
+}
+
+extension GuideCamera {
+    // MARK: motion: how the phone is held and where the camera points
+
+    private func startMotion() {
+        guard motion.isDeviceMotionAvailable, !motion.isDeviceMotionActive else { return }
+        motion.deviceMotionUpdateInterval = 0.1
+        motion.startDeviceMotionUpdates(to: .main) { [weak self] m, _ in
+            guard let self, let g = m?.gravity else { return }
+            self.hold = PhoneHold.from(gx: g.x, gy: g.y)
+            guard Date().timeIntervalSince(self.lastPose) >= 0.2 else { return }
+            self.lastPose = Date()
+            let p = CameraPose(heading: self.arHeading ?? LocationService.shared.heading,
+                               pitch: CameraAim.pitch(gz: g.z), hold: self.hold, fromCamera: self.arHeading != nil)
+            self.pose = p
+            self.onPose?(p)
+        }
+    }
+
+    /// The camera's direction from ARKit, else the compass.
+    var heading: Double? { arHeading ?? LocationService.shared.heading }
+
+    fileprivate func reorient(_ jpeg: Data, _ o: CGImagePropertyOrientation) -> Data? {
+        guard let img = CIImage(data: jpeg)?.oriented(o), let cg = CIContext().createCGImage(img, from: img.extent) else { return nil }
+        return UIImage(cgImage: cg).jpegData(compressionQuality: 0.6)
+    }
+
+    // MARK: reading signs (on the phone, no network)
+
+    fileprivate func readText(_ jpeg: Data) {
+        DispatchQueue.main.async { [self] in
+            guard onText != nil, !textBusy else { return }
+            textBusy = true
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let found = Self.recognizeText(jpeg)
+                DispatchQueue.main.async {
+                    self?.textBusy = false
+                    self?.onText?(found)
+                }
+            }
+        }
+    }
+
+    static func recognizeText(_ jpeg: Data) -> [SeenText] {
+        let req = VNRecognizeTextRequest()
+        req.recognitionLevel = .accurate
+        req.recognitionLanguages = ["de-DE", "en-US"]
+        req.usesLanguageCorrection = false            // shop names are not dictionary words
+        req.minimumTextHeight = 0.025
+        try? VNImageRequestHandler(data: jpeg).perform([req])
+        return (req.results ?? []).compactMap { o in
+            guard let c = o.topCandidates(1).first, c.confidence > 0.4,
+                  c.string.trimmingCharacters(in: .whitespaces).count >= 3 else { return nil }
+            return SeenText(text: c.string, box: o.boundingBox)
+        }
+    }
+}
+
+/// Where the camera points (true compass degrees), up/down (pitch) and how the phone is held.
+struct CameraPose: Equatable {
+    var heading: Double?
+    var pitch: Double = 0
+    var hold: PhoneHold = .portrait
+    var fromCamera = false          // heading from ARKit (exact) rather than the compass
+}
+
+/// A line of text in the picture. `box` is normalised, origin bottom-left.
+struct SeenText: Equatable, Identifiable {
+    let text: String
+    let box: CGRect
+    var id: String { text }
 }
 
 /// Live camera picture behind the guide's controls, for sighted helpers.

@@ -88,6 +88,9 @@ Sign-up asks **what is hard, never for a diagnosis**. The app talks from the fir
 | Accounts and family view (Supabase) | 📝 | Schema written (`supabase/schema.sql`), not wired yet; profiles live in server memory. |
 | Sound alerts (siren, alarm, horn, doorbell, knock, baby, dog, shout) on phone and watch | 🧪 | On-phone SoundAnalysis; big named card, vibration pattern per sound, watch tap. Also inside live captions. Simulated alert verified; real sounds pending. |
 | Counter mode (phone flat between two people, staff side upside down) | ✅ / 🧪 | Captions of the staff, typed text shown and spoken; on-phone translation both ways on iOS 26. |
+| Live street view ("Look around"): compass strip, places floating in their real direction, destination pin, live boxes for people, objects and read signs | 🧪 | Heading from ARKit (gravity + true north), works however the phone is held; spoken sweep "Facing east. Ahead: …". Works without any AI key. Simulator verified with a simulated turn; real camera pending. |
+| Choose destination on a map (search or drop a pin) with accessibility card | ✅ | Step-free, lifts, entrances, accessible toilets, steps, tactile paving from OpenStreetMap; "Take me there" starts the guide. |
+| "What's in front of me?" without an AI key | ✅ | Compass + map + signs the phone reads + LiDAR; with a key, the AI gets the nearby places as facts. |
 | Guide asks: "next departures", "where was the bench?" | ✅ | Live MVG departures (also a button in simple mode); a 3-minute memory of what the camera recognised. |
 | Morning check-in, medicine taps, day anchor, way home, lift rerouting | 📝 | See [PLAN-ADVANCED.md](PLAN-ADVANCED.md). |
 
@@ -504,6 +507,8 @@ Pass them after the bundle id: `xcrun simctl launch <device> app.beistand.ios -o
 | `-openDiagnostics YES` | Open Diagnostics |
 | `-openSounds YES -testSound siren` | Open sound alerts and raise a test alert after 2 s |
 | `-openCounter YES` | Open counter mode |
+| `-openMap YES -dropPin 48.1372,11.5755` | Open the destination map with a pin and its accessibility card |
+| `-openGuide YES -lookAround YES -fakeSweep YES` | Live street view, turning slowly on the spot (simulator has no compass) |
 | `-fakeVolume 0.2` | Pretend the phone is quiet |
 | Watch: `-watchAction ok\|help\|fall` | The watch presses that button 3 s after connecting |
 

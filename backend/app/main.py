@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from . import crossings, data, guide, llm
+from . import crossings, data, guide, llm, orient
 from .config import settings
 from .lang import norm, tr
 from .ladder import Contact, Incident, Ladder, Location, State, Trigger
@@ -295,6 +295,19 @@ def warnings(lat: float, lon: float, lang: str = "en") -> dict:
     return _data(data.weather, lat, lon, lang)
 
 
+@app.get("/landmarks")
+def landmarks(lat: float, lon: float, radius_m: int = Query(150, ge=30, le=400), lang: str = "en") -> dict:
+    """Named streets, shops, stops and entrances around the person, for camera orientation."""
+    return _data(orient.landmarks, lat, lon, radius_m, lang)
+
+
+@app.get("/access")
+def place_access(lat: float, lon: float, lang: str = "en", name: str | None = None,
+                 radius_m: int = Query(120, ge=30, le=300)) -> dict:
+    """Accessibility at a destination: step-free, lifts, entrances, toilets, steps (OpenStreetMap)."""
+    return _data(orient.access, lat, lon, lang, name, radius_m)
+
+
 @app.get("/stations")
 def stations(lat: float, lon: float) -> dict:
     return _data(data.nearby_stations, lat, lon)
@@ -370,6 +383,7 @@ class DescribeIn(BaseModel):
     question: str | None = None
     lang: str = "en"
     purpose: str = "lost"   # "lost" (where am I, what's ahead) | "magnify" (what is this, read it)
+    nearby: list[str] = Field(default_factory=list, max_length=12)   # "Rossmann (drugstore), 20 m slightly right"
 
 
 @app.get("/guide/prompt")
@@ -387,7 +401,8 @@ def geocode(q: str = Query(..., min_length=2, max_length=200), lat: float = 48.1
 def describe(body: DescribeIn) -> dict:
     """One-photo fallback when Gemini Live is not available."""
     try:
-        return guide.describe(body.image_b64, body.address, body.heading, body.question, body.lang, body.purpose)
+        return guide.describe(body.image_b64, body.address, body.heading, body.question, body.lang, body.purpose,
+                              nearby=body.nearby)
     except llm.LLMUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     except (httpx.HTTPError, ValueError) as exc:

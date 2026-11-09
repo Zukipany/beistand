@@ -9,24 +9,47 @@ struct ImLostView: View {
     @Environment(AppStore.self) private var store
     @State private var typing = false
     @State private var typed = ""
+    @State private var showMap = false
 
     var body: some View {
         ZStack {
             GuideCameraPreview(camera: guide.camera).ignoresSafeArea()
-            LinearGradient(colors: [.black.opacity(0.85), .black.opacity(0.2), .black.opacity(0.9)],
+            #if targetEnvironment(simulator)
+            SimulatedStreet().ignoresSafeArea()
+            #endif
+            // Lighter in the live view, so the street stays visible behind the labels.
+            LinearGradient(colors: [.black.opacity(guide.lookAround ? 0.5 : 0.85), .black.opacity(guide.lookAround ? 0 : 0.2), .black.opacity(0.9)],
                            startPoint: .top, endPoint: .bottom).ignoresSafeArea()
+            if guide.lookAround || guide.destinationCoord != nil {
+                LiveViewOverlay().ignoresSafeArea()
+            }
 
             VStack(spacing: 14) {
                 header
                 VolumeBanner()
-                captions
-                Spacer(minLength: 0)
-                controls
+                if guide.lookAround {
+                    // Street-view layout: one caption line under the compass, a slim bar of controls.
+                    liveCaption.padding(.top, 52)
+                    Spacer(minLength: 0)
+                    liveControls
+                } else {
+                    captions
+                    Spacer(minLength: 0)
+                    controls
+                }
             }
             .padding(16)
         }
         .foregroundStyle(.white)
-        .onAppear { guide.start() }
+        .onAppear {
+            guide.start()
+            #if DEBUG
+            // Test hooks: `-lookAround YES` turns the live view on; `-fakeSweep YES` turns on the spot (simulator).
+            if UserDefaults.standard.bool(forKey: "lookAround") { guide.lookAround = true }
+            if UserDefaults.standard.bool(forKey: "fakeSweep") { guide.startDemoSweep() }
+            #endif
+        }
+        .sheet(isPresented: $showMap) { DestinationMapView() }
         .onDisappear { guide.stop() }
         .alert(tr("Enter destination", "Ziel eingeben"), isPresented: $typing) {
             TextField(tr("e.g. Marienplatz", "z. B. Marienplatz"), text: $typed)
@@ -48,6 +71,29 @@ struct ImLostView: View {
             }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    private var liveCaption: some View {
+        Text(guide.lines.last?.text ?? tr("Turn slowly …", "Drehen Sie sich langsam …"))
+            .font(.headline).lineLimit(3)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+            .accessibilityHidden(true)
+    }
+
+    /// Compact controls, so the street stays visible. Same actions, each still a large target (72 pt).
+    private var liveControls: some View {
+        HStack(spacing: 8) {
+            LiveButton(title: tr("Describe", "Beschreiben"), icon: "eye.fill", color: .blue) { guide.describeAhead() }
+            LiveButton(title: tr("Map", "Karte"), icon: "map.fill", color: .brown) { showMap = true }
+            LiveButton(title: tr("Stop", "Stopp"), icon: "binoculars.fill", color: .teal) {
+                guide.lookAround = false
+                Speaker.shared.say(tr("Looking around is off.", "Umschauen ist aus."))
+            }
+            LiveButton(title: tr("Help", "Hilfe"), icon: "sos", color: .red) { safety.requestHelp() }
+            LiveButton(title: tr("End", "Ende"), icon: "xmark", color: .gray) { guide.requestedOpen = false }
+        }
     }
 
     /// Newest line on top, so nothing needs scrolling; older lines fade out.
@@ -77,6 +123,21 @@ struct ImLostView: View {
                 BigButton(title: guide.listening ? tr("Listening …", "Ich höre zu …") : tr("Say destination", "Ziel sagen"), systemImage: "mic.fill", color: .indigo,
                           explanation: tr("Say where you want to go. Hold to type it.", "Sagen Sie, wohin Sie möchten. Halten zum Eintippen.")) { guide.askDestination() }
                     .simultaneousGesture(LongPressGesture(minimumDuration: 1.5).onEnded { _ in typing = true })
+            }
+            HStack(spacing: 12) {
+                BigButton(title: guide.lookAround ? tr("Stop looking", "Umschauen aus") : tr("Look around", "Umschauen"),
+                          color: .teal,
+                          explanation: tr("Turn slowly on the spot. I say what is in each direction and read signs.",
+                                          "Drehen Sie sich langsam. Ich sage, was in jeder Richtung ist, und lese Schilder.")) {
+                    guide.lookAround.toggle()
+                    Speaker.shared.say(guide.lookAround
+                        ? tr("Hold the phone upright and turn slowly. I'll tell you what is in each direction.",
+                             "Halten Sie das Telefon aufrecht und drehen Sie sich langsam. Ich sage, was in jeder Richtung ist.")
+                        : tr("Looking around is off.", "Umschauen ist aus."))
+                }
+                BigButton(title: tr("Map", "Karte"), color: .brown,
+                          explanation: tr("Choose the destination on a map and see lifts and step-free access there.",
+                                          "Ziel auf der Karte wählen und Aufzüge und stufenlosen Zugang sehen.")) { showMap = true }
             }
             if guide.mode != .live {
                 BigButton(title: tr("Next departures", "Nächste Abfahrten"), systemImage: "tram.fill", color: .green,
@@ -140,5 +201,46 @@ struct CameraPreview: UIViewRepresentable {
     final class PreviewView: UIView {
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
         override var layer: AVCaptureVideoPreviewLayer { super.layer as! AVCaptureVideoPreviewLayer }
+    }
+}
+
+
+#if targetEnvironment(simulator)
+/// The simulator has no camera: a plain sky-and-pavement picture, so the live view's labels have a background.
+private struct SimulatedStreet: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            LinearGradient(colors: [Color(red: 0.45, green: 0.65, blue: 0.9), Color(red: 0.8, green: 0.88, blue: 0.95)],
+                           startPoint: .top, endPoint: .bottom)
+            HStack(spacing: 0) {
+                ForEach(0..<6, id: \.self) { i in
+                    Rectangle().fill(Color(white: 0.55 + Double(i % 3) * 0.08)).frame(height: 160)
+                }
+            }
+            LinearGradient(colors: [Color(white: 0.55), Color(white: 0.35)], startPoint: .top, endPoint: .bottom)
+        }
+    }
+}
+#endif
+
+
+/// One of the live view's compact buttons.
+private struct LiveButton: View {
+    let title: String
+    let icon: String
+    let color: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: icon).font(.title2.bold())
+                Text(title).font(.caption.bold()).lineLimit(1).minimumScaleFactor(0.7)
+            }
+            .frame(maxWidth: .infinity, minHeight: 72)
+            .background(color.opacity(0.9), in: RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
     }
 }

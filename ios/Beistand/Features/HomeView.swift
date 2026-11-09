@@ -13,6 +13,7 @@ struct HomeView: View {
     @State private var showDiagnostics = false
     @State private var showSounds = false
     @State private var showCounter = false
+    @State private var showMap = false
     @State private var status = ""
     @State private var tip: String?
 
@@ -67,6 +68,9 @@ struct HomeView: View {
                                           "Ruft \(store.profile?.contacts.first?.name ?? "Ihre Familie") an.")) { callFamily() }
                 BigButton(title: tr("Where am I?", "Wo bin ich?"), systemImage: "location.fill", color: .blue,
                           explanation: tr("Tells you where you are right now.", "Sagt Ihnen, wo Sie gerade sind.")) { whereAmI() }
+                BigButton(title: tr("Choose destination", "Ziel wählen"), systemImage: "map.fill", color: .teal,
+                          explanation: tr("Pick a place on the map, see lifts and step-free access there, and get led there.",
+                                          "Ort auf der Karte wählen, Aufzüge und stufenlosen Zugang sehen und hinführen lassen.")) { showMap = true }
                 BigButton(title: tr("Read this", "Vorlesen"), systemImage: "doc.text.viewfinder", color: .indigo,
                           explanation: tr("Take a photo of a letter. I read it out in simple words.",
                                           "Fotografieren Sie einen Brief. Ich lese ihn in einfachen Worten vor.")) { showRead = true }
@@ -98,6 +102,7 @@ struct HomeView: View {
             .sheet(isPresented: $showDiagnostics) { NavigationStack { DiagnosticsView() } }
             .fullScreenCover(isPresented: $showSounds) { SoundAlertsView() }
             .fullScreenCover(isPresented: $showCounter) { CounterModeView() }
+            .sheet(isPresented: $showMap) { DestinationMapView() }
             .onAppear {
                 #if DEBUG
                 if UserDefaults.standard.bool(forKey: "openMagnifier") { showMagnifier = true }   // test hook
@@ -105,6 +110,7 @@ struct HomeView: View {
                 if UserDefaults.standard.bool(forKey: "openDiagnostics") { showDiagnostics = true } // test hook
                 if UserDefaults.standard.bool(forKey: "openSounds") { showSounds = true }           // test hook
                 if UserDefaults.standard.bool(forKey: "openCounter") { showCounter = true }         // test hook
+                if UserDefaults.standard.bool(forKey: "openMap") { showMap = true }                 // test hook
                 #endif
             }
             .task { await loadWeather() }

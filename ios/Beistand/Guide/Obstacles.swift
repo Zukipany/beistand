@@ -81,6 +81,7 @@ struct SeenObject: Equatable, Codable {
     var label: String           // one of ObjectAlerts.names keys
     var distance: Float
     var side: Side
+    var box: CGRect? = nil      // where in the picture (normalised, origin bottom-left), for the live view
 }
 
 /// Decides what to say about detected objects: short fixed phrases, nearest first, no repeats.

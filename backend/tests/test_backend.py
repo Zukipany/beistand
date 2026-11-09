@@ -299,3 +299,103 @@ def test_guide_tools_declared():
     names = {f["name"] for f in guide.TOOLS[0]["functionDeclarations"]}
     assert {"plan_route", "crossing_info", "next_departures", "where_is", "call_emergency_contact"} <= names
     assert "next_departures()" in guide.prompt_for("sight", "en")["system_prompt"]
+
+
+# --------------------------------------------------------------------------- camera orientation
+
+def test_orient_bearing_and_distance():
+    from app import orient
+    here = (48.1374, 11.5755)
+    assert abs(orient.bearing(here, (48.1474, 11.5755)) - 0) < 0.5           # north
+    assert abs(orient.bearing(here, (48.1374, 11.5855)) - 90) < 0.5          # east
+    assert 1100 < orient.distance(here, (48.1474, 11.5755)) < 1120
+
+
+def test_orient_parse_streets_shops_entrances():
+    from app import orient
+    here = (48.1374, 11.5755)
+    elements = [
+        # an east-west street 20 m north of the person
+        {"type": "way", "tags": {"highway": "pedestrian", "name": "Kaufingerstraße"},
+         "geometry": [{"lat": 48.13758, "lon": 11.5740}, {"lat": 48.13758, "lon": 11.5770}]},
+        # the same street again, further away: one entry per name
+        {"type": "way", "tags": {"highway": "pedestrian", "name": "Kaufingerstraße"},
+         "geometry": [{"lat": 48.1390, "lon": 11.5740}, {"lat": 48.1390, "lon": 11.5770}]},
+        {"type": "node", "lat": 48.1375, "lon": 11.5757, "tags": {"shop": "chemist", "name": "Rossmann"}},
+        {"type": "node", "lat": 48.1372, "lon": 11.5755, "tags": {"railway": "subway_entrance"}},
+        {"type": "node", "lat": 48.1380, "lon": 11.5760, "tags": {"amenity": "bench"}},          # no name: dropped
+    ]
+    out = orient.parse(elements, here, "en")
+    names = [o["name"] for o in out]
+    assert names.count("Kaufingerstraße") == 1 and "Rossmann" in names and "U-Bahn entrance" in names
+    street = next(o for o in out if o["name"] == "Kaufingerstraße")
+    assert 15 <= street["distance_m"] <= 25 and street["street_bearing"] in (89, 90, 91)
+    assert next(o for o in out if o["name"] == "Rossmann")["kind"] == "drugstore"
+    assert out == sorted(out, key=lambda o: o["distance_m"])
+    assert next(o for o in orient.parse(elements, here, "de") if o["name"] == "Rossmann")["kind"] == "Drogerie"
+
+
+def test_landmarks_endpoint(monkeypatch):
+    from app import orient
+    from app.main import app
+    monkeypatch.setattr(orient.data.cache, "get", lambda key, ttl, fetch: {"data": [
+        {"type": "node", "lat": 48.1375, "lon": 11.5757, "tags": {"shop": "bakery", "name": "Rischart"}}],
+        "fetched_at": 0, "age_s": 0, "stale": False})
+    r = TestClient(app).get("/landmarks", params={"lat": 48.1374, "lon": 11.5755})
+    assert r.status_code == 200 and r.json()["data"][0]["kind"] == "bakery"
+
+
+def test_describe_passes_map_places(monkeypatch):
+    from app import guide
+    seen = {}
+    def fake_ask(system, content, max_tokens=0, task=""):
+        seen["text"] = content[-1]["text"]
+        return '{"spoken": "ok", "signs": []}'
+    monkeypatch.setattr(guide, "ask", fake_ask)
+    guide.describe("AAAA", None, 10.0, None, "en", nearby=["Rossmann (drugstore), 20 m ahead"])
+    assert "Rossmann (drugstore), 20 m ahead" in seen["text"]
+
+
+def test_access_summary_from_osm_tags():
+    from app import orient
+    here = (48.1374, 11.5755)
+    els = [
+        {"type": "node", "lat": 48.13742, "lon": 11.57552, "tags": {"amenity": "cafe", "name": "Café Glockenspiel",
+                                                                   "wheelchair": "limited", "toilets:wheelchair": "yes"}},
+        {"type": "node", "lat": 48.1376, "lon": 11.5755, "tags": {"highway": "elevator", "level": "-1;0"}},
+        {"type": "node", "lat": 48.1375, "lon": 11.5756, "tags": {"entrance": "main", "wheelchair": "yes", "automatic_door": "yes"}},
+        {"type": "node", "lat": 48.1380, "lon": 11.5760, "tags": {"amenity": "toilets", "wheelchair": "yes", "centralkey": "eurokey"}},
+        {"type": "way", "tags": {"highway": "steps"}, "geometry": [{"lat": 48.1371, "lon": 11.5755}, {"lat": 48.1371, "lon": 11.5756}]},
+        {"type": "node", "lat": 48.1373, "lon": 11.5754, "tags": {"kerb": "lowered"}},
+    ]
+    out = orient.summarize_access(els, here, "en")
+    assert out["place"]["name"] == "Café Glockenspiel" and out["place"]["wheelchair"] == "limited"
+    assert len(out["elevators"]) == 1 and out["lowered_kerbs"] == 1
+    s = out["spoken"]
+    assert "partly step-free" in s and "wheelchair toilet" in s and "1 lift nearby" in s
+    assert "automatic door" in s and "Euro key" in s and "steps without a ramp" in s
+    de = orient.summarize_access(els, here, "de")["spoken"]
+    assert "teilweise stufenlos" in de and "Aufzug" in de
+
+
+def test_access_unknown_is_not_accessible():
+    from app import orient
+    els = [{"type": "node", "lat": 48.13741, "lon": 11.57551, "tags": {"shop": "bakery", "name": "Rischart"}}]
+    s = orient.summarize_access(els, (48.1374, 11.5755), "en")["spoken"]
+    assert "nobody has entered" in s and "step-free." not in s.replace("whether it is step-free", "")
+    assert "no accessibility information" in orient.summarize_access([], (48.1, 11.5), "en")["spoken"]
+
+
+def test_osm_map_api_shaped_like_overpass():
+    from app import orient
+    raw = [
+        {"type": "node", "id": 1, "lat": 48.1, "lon": 11.5},
+        {"type": "node", "id": 2, "lat": 48.1, "lon": 11.501},
+        {"type": "node", "id": 3, "lat": 48.1001, "lon": 11.5005, "tags": {"highway": "elevator"}},
+        {"type": "way", "id": 9, "nodes": [1, 2], "tags": {"highway": "residential", "name": "Teststraße"}},
+        {"type": "way", "id": 10, "nodes": [1, 2]},                     # untagged: geometry only
+    ]
+    els = orient.osm_to_elements(raw)
+    assert [e["id"] for e in els] == [3, 9]
+    assert els[1]["geometry"] == [{"lat": 48.1, "lon": 11.5}, {"lat": 48.1, "lon": 11.501}]
+    assert orient.is_landmark(els[1]["tags"]) and not orient.is_landmark(els[0]["tags"])

@@ -173,12 +173,16 @@ Never give medical advice beyond reading what is printed. "signs": the text you 
 
 
 def describe(image_b64: str, address: str | None, heading: float | None, question: str | None,
-             lang: str = "en", purpose: str = "lost") -> dict:
+             lang: str = "en", purpose: str = "lost", nearby: list[str] | None = None) -> dict:
     ctx = []
     if address:
         ctx.append(f"Location from GPS: {address}.")
     if heading is not None:
         ctx.append(f"The camera points roughly {compass(heading, 'en')}.")
+    if nearby and purpose != "magnify":
+        # Map facts, so the model names real places instead of guessing; it must still check the picture.
+        ctx.append("Named places from the map, relative to where the camera points (only mention one if the "
+                   "picture fits): " + "; ".join(nearby[:12]) + ".")
     if purpose == "magnify":
         ctx.append(f"The person asks: {question}" if question else "What is this, and what does it say?")
     else:
