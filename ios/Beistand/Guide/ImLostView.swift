@@ -70,7 +70,7 @@ struct ImLostView: View {
             if UserDefaults.standard.bool(forKey: "fakeSweep") { guide.startDemoSweep() }
             #endif
             // Give the guide the walker's position now that it listens.
-            if SimDrive.shared.active { SimDrive.shared.teleport(to: SimDrive.shared.state.position) }
+            if SimDrive.shared.active { SimDrive.shared.announce() }
         }
         .sheet(isPresented: $showMap) { DestinationMapView() }
         .onDisappear {

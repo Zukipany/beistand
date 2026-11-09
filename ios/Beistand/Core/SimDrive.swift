@@ -198,6 +198,9 @@ final class SimDrive {
         LocationService.shared.endSimulation()
     }
 
+    /// Tell the guide where the walker is now (when the guide starts listening), without moving the viewer.
+    func announce() { inject(force: true) }
+
     /// Jump somewhere (tap on the mini-map, or a typed place).
     func teleport(to p: Coord) {
         state.position = p

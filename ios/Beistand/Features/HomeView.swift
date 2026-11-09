@@ -14,6 +14,7 @@ struct HomeView: View {
     @State private var showSounds = false
     @State private var showCounter = false
     @State private var showMap = false
+    @State private var askDriveStart = false
     @State private var status = ""
     @State private var tip: String?
 
@@ -68,6 +69,29 @@ struct HomeView: View {
                                           "Ruft \(store.profile?.contacts.first?.name ?? "Ihre Familie") an.")) { callFamily() }
                 BigButton(title: tr("Where am I?", "Wo bin ich?"), systemImage: "location.fill", color: .blue,
                           explanation: tr("Tells you where you are right now.", "Sagt Ihnen, wo Sie gerade sind.")) { whereAmI() }
+                #if DEBUG
+                // Testing builds: walk real street photos from anywhere, in every mode.
+                BigButton(title: tr("Test drive", "Testfahrt"), systemImage: "gamecontroller.fill", color: .purple,
+                          explanation: tr("Walk real streets in street photos and test the guide, without going outside.",
+                                          "Echte Straßen in Straßenfotos ablaufen und die Begleitung testen, ohne rauszugehen.")) {
+                    askDriveStart = true
+                }
+                .confirmationDialog(tr("Where should the test drive start?", "Wo soll die Testfahrt starten?"),
+                                    isPresented: $askDriveStart, titleVisibility: .visible) {
+                    Button(tr("Marienplatz, Munich", "Marienplatz, München")) { startDrive(Coord(lat: 48.1388, lon: 11.5672), heading: 90) }
+                    Button(tr("Where I am now", "Wo ich gerade bin")) {
+                        Task {
+                            let l = await LocationService.shared.current()
+                            startDrive(l.map { Coord(lat: $0.coordinate.latitude, lon: $0.coordinate.longitude) }
+                                       ?? Coord(lat: 48.1388, lon: 11.5672), heading: 0)
+                        }
+                    }
+                    Button(tr("Cancel", "Abbrechen"), role: .cancel) {}
+                } message: {
+                    Text(tr("Then tap Map to choose a destination; the guide leads you there.",
+                            "Dann auf Karte tippen und ein Ziel wählen; die Begleitung führt Sie hin."))
+                }
+                #endif
                 BigButton(title: tr("Choose destination", "Ziel wählen"), systemImage: "map.fill", color: .teal,
                           explanation: tr("Pick a place on the map, see lifts and step-free access there, and get led there.",
                                           "Ort auf der Karte wählen, Aufzüge und stufenlosen Zugang sehen und hinführen lassen.")) { showMap = true }
@@ -115,6 +139,12 @@ struct HomeView: View {
             }
             .task { await loadWeather() }
         }
+    }
+
+    private func startDrive(_ p: Coord, heading: Double) {
+        SimDrive.shared.start(at: p, heading: heading)
+        GuideController.shared.lookAround = true
+        GuideController.shared.requestedOpen = true
     }
 
     private func callFamily() {

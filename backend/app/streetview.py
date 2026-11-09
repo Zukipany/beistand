@@ -91,14 +91,26 @@ def _google(lat: float, lon: float, heading: float, pitch: float, fov: float) ->
 MAPILLARY = "https://graph.mapillary.com/images"
 
 
+def position(im: dict) -> tuple[float, float] | None:
+    """Where a photo really is: Mapillary's corrected position (from matching photos), else its GPS.
+
+    None when the two disagree by more than 15 m: the photo's place is not trustworthy.
+    """
+    g = (im.get("geometry") or {}).get("coordinates")
+    c = (im.get("computed_geometry") or {}).get("coordinates")
+    if c and g and distance((g[1], g[0]), (c[1], c[0])) > 15:
+        return None
+    p = c or g
+    return (p[1], p[0]) if p else None
+
+
 def pick(images: list[dict], here: tuple[float, float], heading: float) -> dict | None:
     """Nearest picture that looks the right way. Panoramas look every way; 30° off counts like 10 m."""
     best, best_score = None, float("inf")
     for im in images:
-        coords = (im.get("geometry") or {}).get("coordinates")
-        if not coords:
+        pos = position(im)
+        if not pos:
             continue
-        pos = (coords[1], coords[0])
         d = distance(here, pos)
         if im.get("is_pano"):
             score = d
@@ -143,21 +155,23 @@ def _crop(jpeg: bytes, box: tuple[int, int, int, int]) -> bytes:
     return buf.getvalue()
 
 
-FIELDS = "id,thumb_2048_url,thumb_1024_url,computed_compass_angle,compass_angle,geometry,is_pano,captured_at"
+FIELDS = "id,thumb_2048_url,thumb_1024_url,computed_compass_angle,compass_angle,geometry,computed_geometry,is_pano,captured_at"
 
 
 def nearest(lat: float, lon: float, heading: float, exclude: str | None = None) -> dict:
     """The Mapillary picture to start the walking viewer from."""
     if not settings.mapillary_token:
         raise NoImagery("no MAPILLARY_TOKEN in backend/.env")
-    for d in (0.0005, 0.002):                              # ~50 m, then ~200 m
-        r = httpx.get(MAPILLARY, params={"access_token": settings.mapillary_token, "limit": 200, "fields": FIELDS,
+    # Small boxes first, with a high limit so they hold every photo there: a big box only returns a
+    # sample in busy streets, and the "nearest" of a sample can be far away.
+    for d in (0.0005, 0.0008, 0.002):                      # ~50 m, ~80 m, ~200 m
+        r = httpx.get(MAPILLARY, params={"access_token": settings.mapillary_token, "limit": 1000, "fields": FIELDS,
                                          "bbox": f"{lon - d},{lat - d},{lon + d},{lat + d}"}, headers=data.UA, timeout=15)
         r.raise_for_status()
         im = pick([i for i in r.json().get("data", []) if i.get("id") != exclude], (lat, lon), heading)
         if im:
-            c = im["geometry"]["coordinates"]
-            return {"id": im["id"], "lat": c[1], "lon": c[0], "is_pano": bool(im.get("is_pano"))}
+            lat2, lon2 = position(im)
+            return {"id": im["id"], "lat": lat2, "lon": lon2, "is_pano": bool(im.get("is_pano"))}
     raise NoImagery("mapillary: no picture within 200 m")
 
 
@@ -174,7 +188,7 @@ def by_id(image_id: str, heading: float, fov: float = 80) -> Picture:
 def _mapillary(lat: float, lon: float, heading: float, fov: float) -> Picture:
     d = 0.0005                                             # ~50 m box
     r = httpx.get(MAPILLARY, params={
-        "access_token": settings.mapillary_token, "limit": 100, "fields": FIELDS,
+        "access_token": settings.mapillary_token, "limit": 1000, "fields": FIELDS,
         "bbox": f"{lon - d},{lat - d},{lon + d},{lat + d}"}, headers=data.UA, timeout=15)
     r.raise_for_status()
     im = pick(r.json().get("data", []), (lat, lon), heading)
@@ -193,12 +207,12 @@ def _download(im: dict, heading: float, fov: float) -> Picture:
         size = Image.open(io.BytesIO(jpeg)).size
         angle = im.get("computed_compass_angle", im.get("compass_angle")) or 0
         jpeg = _crop(jpeg, pano_crop(size[0], size[1], heading, angle, fov))
-    c = im["geometry"]["coordinates"]
+    pos = position(im) or (im["geometry"]["coordinates"][1], im["geometry"]["coordinates"][0])
     captured = None
     if im.get("captured_at"):
         import datetime
         captured = datetime.datetime.fromtimestamp(im["captured_at"] / 1000, datetime.timezone.utc).strftime("%Y-%m")
-    return Picture(jpeg, "mapillary", c[1], c[0], captured)
+    return Picture(jpeg, "mapillary", pos[0], pos[1], captured)
 
 
 # --------------------------------------------------------------------------- walking viewer page

@@ -55,6 +55,12 @@ struct DestinationMapView: View {
                 ToolbarItem(placement: .topBarLeading) { Button(tr("Close", "Schließen")) { dismiss() } }
             }
             .onAppear {
+                // Test drive: the map starts where the walker is, not where the phone really is.
+                if SimDrive.shared.active {
+                    let p = SimDrive.shared.state.position
+                    camera = .region(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: p.lat, longitude: p.lon),
+                                                        latitudinalMeters: 900, longitudinalMeters: 900))
+                }
                 #if DEBUG
                 // Test hook: `-dropPin 48.1394,11.5649` drops a pin there.
                 if let s = UserDefaults.standard.string(forKey: "dropPin") {

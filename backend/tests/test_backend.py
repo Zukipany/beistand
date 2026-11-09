@@ -474,3 +474,15 @@ def test_drive_viewer_page_and_nearest(monkeypatch):
 def test_streetview_rejects_bad_image_id():
     from app.main import app
     assert TestClient(app).get("/streetview", params={"image_id": "../x"}).status_code == 422
+
+
+def test_streetview_skips_photos_with_untrustworthy_position():
+    from app import streetview
+    here = (48.1388, 11.5672)
+    good = {"id": "good", "is_pano": True, "geometry": {"coordinates": [11.56727, 48.13889]},
+            "computed_geometry": {"coordinates": [11.56728, 48.13887]}}
+    moved = {"id": "moved", "is_pano": True, "geometry": {"coordinates": [11.56720, 48.13880]},      # right here …
+             "computed_geometry": {"coordinates": [11.56780, 48.13869]}}                              # … but really 45 m away
+    assert streetview.position(moved) is None
+    assert streetview.pick([moved, good], here, 90)["id"] == "good"
+    assert streetview.position({"geometry": {"coordinates": [11.5, 48.1]}}) == (48.1, 11.5)          # no correction: GPS
