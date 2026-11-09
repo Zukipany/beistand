@@ -1,6 +1,6 @@
 # Beistand – advanced plan
 
-8 Nov 2026. Builds on "Beistand App Plan" (7 Nov) and `PROGRESS.md`. hackaTUM is 27–29 Nov, 19 days away.
+8 Nov 2026. Builds on "Beistand App Plan" (7 Nov). hackaTUM is 27–29 Nov, 19 days away.
 
 ## 1. Why it still feels basic
 
@@ -27,7 +27,7 @@ Camera 30 fps ─┬─► L1 on-device, every frame (<100 ms) ──► alarms:
 LiDAR depth   ─┤        objects, distance, text, signs
 Microphone   ──┤                │ events as text: "[CONTEXT] bike 3 m, left, approaching"
                ├─► L2 Gemini Live, 1 frame/s + voice ──► conversation, guidance, questions
-               └─► L3 Claude Opus 5.5, one frozen frame ──► careful reading and explaining
+               └─► L3 cloud vision model, one frozen frame ──► careful reading and explaining
 ```
 
 ### L1 – on device, every frame (new, biggest change)
@@ -55,7 +55,7 @@ Rules: L1 alarms always win over speech (a "stop" interrupts the guide). Everyth
 
 ### L3 – one careful look
 
-Claude Opus 5.5 for letters, packaging, forms, expiry dates and "what is this?" (already built; needs `ANTHROPIC_API_KEY`). Add: send the sharpest frame plus the L1 text result, so the model can check the on-device reading.
+A cloud vision model for letters, packaging, forms, expiry dates and "what is this?" (already built; needs `ANTHROPIC_API_KEY`). Add: send the sharpest frame plus the L1 text result, so the model can check the on-device reading.
 
 ## 3. Position: as exact as possible ("military-grade" without the military)
 
@@ -164,7 +164,7 @@ Every new feature ships with three things: a unit test for the logic, a Diagnost
 
 | When | Work |
 |---|---|
-| 9–12 Nov | Keys (Anthropic, Gemini, Twilio, DB FaSta). Live guide on `gemini-3.8-live` with session resumption. Traffic-light layer and acoustic-crossing announcements. |
+| 9–12 Nov | Keys (vision model, Gemini, Twilio, DB FaSta). Live guide on `gemini-3.8-live` with session resumption. Traffic-light layer and acoustic-crossing announcements. |
 | 13–17 Nov | L1: LiDAR obstacle beeps, then the object detector with tracking. Test-walk recorder and replay. |
 | 18–21 Nov | L1 → L2 grounding, new guide tools, sound alerts on the watch, counter mode. |
 | 22–24 Nov | Map matching + step counting. Geo-tracking check in Munich. Field tests with users. |
