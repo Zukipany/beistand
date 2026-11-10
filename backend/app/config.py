@@ -45,6 +45,9 @@ class Settings:
     twilio_auth_token: str = field(default_factory=lambda: _env("TWILIO_AUTH_TOKEN"))
     twilio_from_number: str = field(default_factory=lambda: _env("TWILIO_FROM_NUMBER"))
     ors_api_key: str = field(default_factory=lambda: _env("ORS_API_KEY"))
+    # Street pictures for the app's test drive (either one is enough).
+    google_maps_api_key: str = field(default_factory=lambda: _env("GOOGLE_MAPS_API_KEY"))
+    mapillary_token: str = field(default_factory=lambda: _env("MAPILLARY_TOKEN"))
     db_client_id: str = field(default_factory=lambda: _env("DB_CLIENT_ID"))
     db_api_key: str = field(default_factory=lambda: _env("DB_API_KEY"))
     public_base_url: str = field(default_factory=lambda: _env("PUBLIC_BASE_URL", "http://localhost:8000"))

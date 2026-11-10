@@ -25,12 +25,10 @@ struct BigButton: View {
                 .padding(.horizontal, 24).padding(.vertical, 12)
                 .frame(maxWidth: .infinity, minHeight: 88)
                 .foregroundStyle(.white)
-                .background(A11yColor.fill(color).opacity(enabled ? 1 : 0.45), in: RoundedRectangle(cornerRadius: 20))
-                .overlay {
-                    if contrast == .increased {
-                        RoundedRectangle(cornerRadius: 20).strokeBorder(Color.primary, lineWidth: 3)
-                    }
-                }
+                .contentShape(Rectangle())
+                // Tinted glass; solid with a border when the person needs contrast (see Surface).
+                .surface(color, cornerRadius: 26, interactive: true)
+                .opacity(enabled ? 1 : 0.45)
         }
         .buttonStyle(.plain)
         .simultaneousGesture(LongPressGesture(minimumDuration: 0.8).onEnded { _ in

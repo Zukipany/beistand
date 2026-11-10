@@ -36,7 +36,7 @@ Sign-up asks **what is hard, never for a diagnosis**. The app talks from the fir
 | **Older person** | A calm home screen with four big buttons (Call family, Where am I, Read this, Help). Letters are read aloud in simple words with the deadline first. Strange messages are checked for scams. The weather tip warns about ice and heat. A fall starts the help ladder; a dropped phone calls out. |
 | **Blind** | One button, "I'm lost", opens a camera guide that says where the person is, asks where to go, and leads them by voice and vibration. The phone beeps like a parking sensor when something is in the way and names what it is ("Bike, 2 metres, left"). Routes prefer traffic lights that have a sound signal for blind people, and the guide announces them. |
 | **Low vision** | A live magnifier with real camera zoom, light, high-contrast and inverted colours, freeze, and "Explain", which reads the important text aloud with each word highlighted. |
-| **Deaf or hard of hearing** | Live captions of the people around them, where louder speech appears bigger and bolder, a loudness meter, a "loud sound nearby" warning, and on-phone translation when the other person speaks another language. Alerts become light and vibration instead of speech. |
+| **Deaf or hard of hearing** | Sound alerts for sirens, doorbells and more (also on the watch), counter mode for talking at a desk, live captions of the people around them, where louder speech appears bigger and bolder, a loudness meter, a "loud sound nearby" warning, and on-phone translation when the other person speaks another language. Alerts become light and vibration instead of speech. |
 | **Wheelchair, walker, pram** | Step-free routes (wheelchair profile). |
 | **Memory problems** | A bystander card on the alert screen ("I have memory problems, please call …"); more is planned (day anchor, way home). |
 | **Seizures** | Nothing in the app ever flashes; alert screens use steady colour. The bystander card explains what to do. |
@@ -86,7 +86,30 @@ Sign-up asks **what is hard, never for a diagnosis**. The app talks from the fir
 | Settings → Diagnostics (status and test button per feature) | ✅ | |
 | Test-walk recorder and replay | ✅ | |
 | Accounts and family view (Supabase) | 📝 | Schema written (`supabase/schema.sql`), not wired yet; profiles live in server memory. |
-| Morning check-in, medicine taps, day anchor, way home, counter mode, sound alerts, lift rerouting, transport helper | 📝 | See [PLAN-ADVANCED.md](PLAN-ADVANCED.md). |
+| Sound alerts (siren, alarm, horn, doorbell, knock, baby, dog, shout) on phone and watch | 🧪 | On-phone SoundAnalysis; big named card, vibration pattern per sound, watch tap. Also inside live captions. Simulated alert verified; real sounds pending. |
+| Counter mode (phone flat between two people, staff side upside down) | ✅ / 🧪 | Captions of the staff, typed text shown and spoken; on-phone translation both ways on iOS 26. |
+| Live street view ("Look around"): compass strip, places floating in their real direction, destination pin, live boxes for people, objects and read signs | 🧪 | Heading from ARKit (gravity + true north), works however the phone is held; spoken sweep "Facing east. Ahead: …". Works without any AI key. Simulator verified with a simulated turn; real camera pending. |
+| Test drive: walk real streets from a desk (W A S D / arrows / on-screen sticks, mini-map, tap to jump) | ✅ / 🔑 | Feeds the guide's GPS, compass and camera, so route following, live view, sign reading and people detection run as outside. With `MAPILLARY_TOKEN`: Mapillary's walking viewer (animated steps between photos). With `GOOGLE_MAPS_API_KEY`: still Street View pictures. Settings → "The guide uses: Test drive" makes "I'm lost" always start one (or Diagnostics → Test drive). |
+| On the U-Bahn: ride helper | ✅ / 🧪 | Choose where to get off; MVG plans the trip (line, platform, every stop, delays, exit, broken lifts). Underground without GPS it follows the timetable, counts the stops the phone feels (motion) and reads station signs. Says each stop, warns one stop before (strong vibration, watch tap), red "Get off now" screen, change instructions. Help card for other passengers (German and English, read aloud) and call contact. The guide camera notices a train or station and offers it. Dev: ride ×20. |
+| Ride: feels the train, boards, gets you out | ✅ / 🧪 | Accelerometer hum + iOS "in a vehicle" + speed: notices a train ride when the app is open and offers the helper; felt stops move the ride. Location at stations moves it too. At the platform "Find the open door" (LiDAR finds the gap in the train's side: "Open door, slightly left, 2 metres", "Step in now. Mind the gap."). Inside: one "Relax: 9 stops to …", then quiet until one stop before. "Guide me out" leads to the nearest station exit, then on to the destination. |
+| Indoors: way out, steps and edges (LiDAR) | 🧪 | Notices being inside; names exit signs, doors, open doorways and windows ("Door, 3 metres, slightly left"); always warns "Step down in 1.5 metres", "Stairs going down", "Stop! No floor ahead" with vibration. |
+| Mac (Dev) | ✅ | `ios/make-mac-project.sh` → Mac Catalyst build signed locally; the test drive with W A S D on a Mac. |
+| Glass design, home by need | ✅ | iOS 26 Liquid Glass (solid high-contrast surfaces with Reduce Transparency, Increase Contrast, low vision or easy reading). Home sections ordered by the person's modes: Getting around, Hearing, Reading; others under "More for other needs"; call family / help / speak always at the bottom. |
+| Voice control | ✅ | Speak button: "I'm lost", "Where am I?", "U-Bahn to Odeonsplatz", "find ice cream", "captions", "read this", "call my daughter", "help", "back" — English and German. |
+| Step by step | ✅ | Questions with big answers for people who see but don't speak or want guidance; answers lead on, show information in place (address, next trains, help card) or open the tool. Home screen for speech and easy-reading modes. |
+| Voices | ✅ | Settings → Voice: choose a voice per language (Premium/Enhanced first, robotic novelty voices hidden), preview, calm/normal/quick pace, Personal Voice; how to download natural voices. |
+| Navigate / Explore modes | ✅ | Navigate (default, and always while a destination is set): only the way, the goal's direction ("U-Bahn entrance, 15 metres, slightly left") and obstacles right in the path. Explore: places around, one or two per direction. Mode chip in the guide. |
+| Find: "What are you looking for?" | ✅ | Say or tap station, ice cream, café, food, toilet, pharmacy, supermarket, cash, or a name; leads to the nearest within 400 m (OpenStreetMap). |
+| E-scooter and bike vibration (blind, low vision, deafblind) | ✅ / 🧪 | Triple vibration when walking towards a parked shared scooter (live Dott/Bird GBFS feeds, Munich) or when the camera sees one ahead within 3 m or within 1.2 m. Felt, never spoken. Dev: scooter map to compare the feed with the street. |
+| Dev mode | ✅ | Settings → Dev mode: testing tools appear, all labelled "Dev" (test drive, diagnostics, scooter map, demo buttons). Off in a release build. |
+| Next-turn card and path markers in the live view | ✅ | Instruction, distance and an arrow that turns with the person; green chevrons where the next route point is. Camera and test drive. |
+| Choose destination on a map (search or drop a pin) with accessibility card | ✅ | Step-free, lifts, entrances, accessible toilets, steps, tactile paving from OpenStreetMap; "Take me there" starts the guide. |
+| "What's in front of me?" without an AI key | ✅ | Compass + map + signs the phone reads + LiDAR; with a key, the AI gets the nearby places as facts. |
+| Guide asks: "next departures", "where was the bench?" | ✅ | Live MVG departures (also a button in simple mode); a 3-minute memory of what the camera recognised. |
+| Morning check-in, medicine reminders, day anchor, take me home | 🧪 | Shown for older people and memory problems; reminders are local notifications. |
+| Talk with pictures, type to speak | 🧪 | Home section "Talking" for people who cannot speak. |
+| Colour names, "Is this my train?" | 🧪 | Magnifier button; camera reads the arriving train's display during a ride. |
+| Lift rerouting | 📝 | See [PLAN-ADVANCED.md](PLAN-ADVANCED.md). |
 
 ---
 
@@ -139,7 +162,7 @@ flowchart LR
 | iPhone app | Swift 5 mode, SwiftUI, iOS 18+ (newer speech and translation on iOS 26+), generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen) |
 | Watch app | watchOS 11+, SwiftUI, WatchConnectivity, CoreMotion |
 | Backend | Python 3.11+, FastAPI, httpx, the official `anthropic` SDK |
-| On-phone AI | Speech (SFSpeechRecognizer, SpeechAnalyzer), Translation, Vision, ARKit scene depth, SoundAnalysis-ready |
+| On-phone AI | Speech (SFSpeechRecognizer, SpeechAnalyzer), Translation, Vision, ARKit scene depth, SoundAnalysis |
 | Cloud AI | Claude Opus 5.5 (vision and language), Gemini Live (`gemini-3.8-live`) |
 | Accounts (planned) | Supabase (Postgres + Auth, row-level security) |
 
@@ -227,6 +250,8 @@ Every key is optional: a missing key switches that feature to an offline or dry-
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` | Real texts and calls to the emergency contact | [console.twilio.com](https://console.twilio.com) |
 | `DB_CLIENT_ID`, `DB_API_KEY` | Lift status at stations (DB FaSta) | [developers.deutschebahn.com](https://developers.deutschebahn.com) |
 | `ORS_API_KEY` | OpenRouteService routes (Valhalla is used without it) | [openrouteservice.org](https://openrouteservice.org) |
+| `MAPILLARY_TOKEN` | Test drive in Mapillary's walking viewer; pictures may be used for recognition (CC BY-SA) | [mapillary.com/dashboard/developers](https://www.mapillary.com/dashboard/developers) |
+| `GOOGLE_MAPS_API_KEY` | Test drive with Google Street View still pictures (display; recognition only for local testing) | [console.cloud.google.com](https://console.cloud.google.com) → Street View Static API |
 | `PUBLIC_BASE_URL` | The address the contact opens from the SMS; use a tunnel (ngrok, Cloudflare) for a demo | – |
 
 Model names are settings, too: `ANTHROPIC_MODEL` (default `claude-opus-5-5`), `GEMINI_LIVE_MODEL` (default `gemini-3.8-live`), `GEMINI_VISION_MODEL`.
@@ -499,6 +524,11 @@ Pass them after the bundle id: `xcrun simctl launch <device> app.beistand.ios -o
 | `-openMagnifier YES` | Open the magnifier (simulator shows a test medicine label) |
 | `-openCaptions YES -demoCaptions YES` | Live captions with a scripted conversation at different volumes |
 | `-openDiagnostics YES` | Open Diagnostics |
+| `-openSounds YES -testSound siren` | Open sound alerts and raise a test alert after 2 s |
+| `-openCounter YES` | Open counter mode |
+| `-openMap YES -dropPin 48.1372,11.5755` | Open the destination map with a pin and its accessibility card |
+| `-openGuide YES -simDrive YES -simStart 48.1388,11.5672 -simHeading 90` | Test drive from Neuhauser Straße, facing east |
+| `-openGuide YES -lookAround YES -fakeSweep YES` | Live street view, turning slowly on the spot (simulator has no compass) |
 | `-fakeVolume 0.2` | Pretend the phone is quiet |
 | Watch: `-watchAction ok\|help\|fall` | The watch presses that button 3 s after connecting |
 

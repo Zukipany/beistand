@@ -8,3 +8,8 @@ ios/build/
 ios/build-device/
 .DS_Store
 ios/Beistand.xcodeproj/
+ios/BeistandMac.xcodeproj/
+ios/project-mac.yml
+ios/build-cat/
+ios/build-mac/
+ios/build-cat.log

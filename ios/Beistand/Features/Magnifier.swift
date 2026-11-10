@@ -90,6 +90,18 @@ final class MagnifierCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDeleg
     }
 
     /// The current picture as JPEG, unfiltered, for "Explain".
+    /// The colour in the middle of the picture, named ("dark blue"), for clothes, pills, a bus.
+    func centreColour() -> String? {
+        guard let f = rawFrame else { return nil }
+        let img = CIImage(cgImage: f)
+        let e = img.extent
+        let box = CGRect(x: e.midX - e.width * 0.1, y: e.midY - e.height * 0.1, width: e.width * 0.2, height: e.height * 0.2)
+        guard let avg = CIFilter(name: "CIAreaAverage", parameters: [kCIInputImageKey: img, kCIInputExtentKey: CIVector(cgRect: box)])?.outputImage else { return nil }
+        var px = [UInt8](repeating: 0, count: 4)
+        ci.render(avg, toBitmap: &px, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+        return ColorName.name(r: Double(px[0]) / 255, g: Double(px[1]) / 255, b: Double(px[2]) / 255)
+    }
+
     func jpeg() -> Data? {
         guard let f = rawFrame else { return nil }
         return UIImage(cgImage: f).jpegData(compressionQuality: 0.7)
@@ -222,6 +234,11 @@ struct MagnifierView: View {
                 square("circle.lefthalf.filled", colorsName) { cam.cycleColors() }
                 square(cam.frozen ? "play.fill" : "pause.fill",
                        cam.frozen ? tr("Live", "Live") : tr("Freeze", "Anhalten")) { cam.frozen.toggle() }
+                square("paintpalette.fill", tr("What colour?", "Welche Farbe?")) {
+                    let name = cam.centreColour() ?? tr("I can't see a colour yet.", "Ich sehe noch keine Farbe.")
+                    explanation = name.prefix(1).uppercased() + name.dropFirst()
+                    Speaker.shared.say(explanation ?? name)
+                }
             }
             BigButton(title: explaining ? tr("Looking …", "Schaue …") : tr("Explain", "Erklären"),
                       systemImage: "text.viewfinder", color: .blue,

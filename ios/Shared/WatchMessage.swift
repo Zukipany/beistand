@@ -11,6 +11,7 @@ enum WatchMessage: Equatable {
 
     // phone → watch (transient; the current state travels as WatchState)
     case cue(GuideCue)
+    case sound(SoundKind)                 // an important sound the phone heard (hearing mode)
 
     var dict: [String: Any] {
         switch self {
@@ -19,6 +20,7 @@ enum WatchMessage: Equatable {
         case .wristImpact(let at): ["k": "impact", "t": at.timeIntervalSince1970]
         case .wristFall(let at): ["k": "fall", "t": at.timeIntervalSince1970]
         case .cue(let c): ["k": "cue", "c": c.rawValue]
+        case .sound(let k): ["k": "sound", "s": k.rawValue]
         }
     }
 
@@ -30,6 +32,7 @@ enum WatchMessage: Equatable {
         case "impact": guard let t else { return nil }; self = .wristImpact(at: t)
         case "fall": guard let t else { return nil }; self = .wristFall(at: t)
         case "cue": guard let c = (d["c"] as? String).flatMap(GuideCue.init) else { return nil }; self = .cue(c)
+        case "sound": guard let k = (d["s"] as? String).flatMap(SoundKind.init) else { return nil }; self = .sound(k)
         default: return nil
         }
     }

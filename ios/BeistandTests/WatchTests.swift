@@ -317,3 +317,42 @@ final class ObstacleTests: XCTestCase {
         XCTAssertGreaterThan(beeps.first!!, 0.5)
     }
 }
+
+final class HearingAndMemoryTests: XCTestCase {
+    func testSoundLabelsMap() {
+        XCTAssertEqual(SoundKind.from(identifier: "police_siren"), .siren)
+        XCTAssertEqual(SoundKind.from(identifier: "smoke_detector"), .alarm)
+        XCTAssertEqual(SoundKind.from(identifier: "car_horn"), .horn)
+        XCTAssertEqual(SoundKind.from(identifier: "door_bell"), .doorbell)
+        XCTAssertEqual(SoundKind.from(identifier: "dog_bark"), .dog)
+        XCTAssertNil(SoundKind.from(identifier: "music"))
+    }
+
+    func testSoundPolicyThresholdsUrgencyAndRepeats() {
+        var p = SoundAlertPolicy()
+        XCTAssertNil(p.feed([("doorbell", 0.5)], at: 0))                          // below the doorbell threshold
+        XCTAssertEqual(p.feed([("dog_bark", 0.9), ("siren", 0.55)], at: 1), .siren)  // urgent wins over more confident
+        XCTAssertNil(p.feed([("siren", 0.9)], at: 4))                             // not again within 8 s
+        XCTAssertEqual(p.feed([("siren", 0.9)], at: 10), .siren)
+        XCTAssertEqual(p.feed([("dog_bark", 0.9)], at: 11), .dog)
+    }
+
+    func testWatchSoundMessageRoundTrip() {
+        XCTAssertEqual(WatchMessage(WatchMessage.sound(.doorbell).dict), .sound(.doorbell))
+        XCTAssertNil(WatchMessage(["k": "sound", "s": "music"]))
+    }
+
+    func testSceneMemoryAnswers() {
+        Lang.override = "en"; defer { Lang.override = nil }
+        var m = SceneMemory()
+        let start = Coord(lat: 48.1, lon: 11.5), later = Coord(lat: 48.1, lon: 11.5004)    // ~30 m east
+        m.add([SeenObject(label: "bench", distance: 2, side: .right)], at: 0, position: start)
+        m.add([SeenObject(label: "bench", distance: 1.5, side: .right)], at: 3, position: start)   // same bench, ignored
+        XCTAssertEqual(m.sightings.count, 1)
+        let a = m.answer("where was the bench?", now: 40, here: later)
+        XCTAssertTrue(a.contains("bench 40 seconds ago") && a.contains("about 30 metres from here"), a)
+        XCTAssertTrue(m.answer("Wo ist die Bank?", now: 40, here: start).contains("right around here"))
+        XCTAssertTrue(m.answer("a door", now: 40, here: start).contains("haven't noticed a door"))
+        XCTAssertTrue(m.answer("bench", now: 400, here: start).contains("haven't noticed"))    // forgotten after 3 min
+    }
+}

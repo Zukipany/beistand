@@ -81,6 +81,7 @@ struct SeenObject: Equatable, Codable {
     var label: String           // one of ObjectAlerts.names keys
     var distance: Float
     var side: Side
+    var box: CGRect? = nil      // where in the picture (normalised, origin bottom-left), for the live view
 }
 
 /// Decides what to say about detected objects: short fixed phrases, nearest first, no repeats.
@@ -90,6 +91,8 @@ struct ObjectAlerts {
     var peopleWithin: Float = 1.5           // crowds would otherwise talk all the time
     var repeatAfter: TimeInterval = 8
     var minGap: TimeInterval = 2
+    /// Calm mode: only things in the walking path.
+    var onlyAhead = false
     private var lastSaid: [String: TimeInterval] = [:]
     private var lastAny: TimeInterval = -.infinity
 
@@ -106,6 +109,7 @@ struct ObjectAlerts {
         guard t - lastAny >= minGap else { return nil }
         let candidates = objects
             .filter { $0.distance <= ($0.label == "person" ? peopleWithin : announceWithin) }
+            .filter { !onlyAhead || $0.side == .ahead }
             .filter { t - (lastSaid[key($0)] ?? -.infinity) >= repeatAfter }
             .sorted { rank($0) < rank($1) }
         guard let o = candidates.first else { return nil }
@@ -196,5 +200,59 @@ final class Beeper {
         update(nil)
         player.stop()
         engine.stop()
+    }
+}
+
+/// What the phone recognised during the last few minutes, with where the person was, so the guide
+/// can answer "where was the bench?". Pure, testable.
+struct SceneMemory {
+    struct Sighting: Equatable {
+        let object: SeenObject
+        let at: TimeInterval
+        let position: Coord?
+    }
+
+    var keep: TimeInterval = 180
+    private(set) var sightings: [Sighting] = []
+
+    mutating func add(_ objects: [SeenObject], at t: TimeInterval, position: Coord?) {
+        sightings.removeAll { t - $0.at > keep }
+        for o in objects where o.label != "obstacle" {
+            // One entry per thing per 10 s, so standing next to a bench doesn't fill the memory.
+            if let last = sightings.last(where: { $0.object.label == o.label }), t - last.at < 10 { continue }
+            sightings.append(Sighting(object: o, at: t, position: position))
+        }
+    }
+
+    /// The label the person means: "bench", "Bank", "the bikes" → "bench", "bench", "bicycle".
+    static func label(for words: String) -> String? {
+        let w = words.lowercased()
+        for (key, n) in ObjectAlerts.names where w.contains(n.en.lowercased()) || w.contains(n.de.lowercased()) {
+            return key
+        }
+        return ObjectAlerts.normalise(w)
+    }
+
+    /// A sentence for the guide (and the person).
+    func answer(_ words: String, now: TimeInterval, here: Coord?) -> String {
+        guard let label = Self.label(for: words) else {
+            return tr("I don't know that kind of thing yet. I can remember benches, doors, steps, bikes, scooters, poles, signs and people.",
+                      "Das kenne ich noch nicht. Ich merke mir Bänke, Türen, Stufen, Fahrräder, Roller, Pfosten, Schilder und Personen.")
+        }
+        let n = ObjectAlerts.names[label] ?? ObjectAlerts.names["obstacle"]!
+        guard let s = sightings.last(where: { $0.object.label == label && now - $0.at <= keep }) else {
+            return tr("I haven't noticed a \(n.en.lowercased()) in the last \(Int(keep / 60)) minutes.",
+                      "Ich habe in den letzten \(Int(keep / 60)) Minuten kein(e) \(n.de) bemerkt.")
+        }
+        let secs = Int(now - s.at)
+        var where_ = ""
+        if let p = s.position, let here {
+            let d = Int(Geo.distance(here, p).rounded())
+            where_ = d < 5 ? tr(", right around here", ", genau hier in der Nähe")
+                           : tr(", about \(d) metres from here", ", etwa \(d) Meter von hier")
+        }
+        let ago = secs < 10 ? tr("just now", "gerade eben") : tr("\(secs) seconds ago", "vor \(secs) Sekunden")
+        return tr("I noticed a \(n.en.lowercased()) \(ago)\(where_). It was \(Int(s.object.distance.rounded())) metres \(s.object.side.rawValue) of you then.",
+                  "Ich habe \(ago) ein(e) \(n.de) bemerkt\(where_). Es war damals \(Int(s.object.distance.rounded())) Meter \(s.object.side == .left ? "links" : s.object.side == .right ? "rechts" : "vorne").")
     }
 }

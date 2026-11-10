@@ -105,6 +105,9 @@ final class LiveCaptioner {
     private(set) var loudAlert = false
     private(set) var problem: String?
     private(set) var engine = "–"
+    /// A named sound (siren, doorbell …) heard in the last few seconds, from the same microphone.
+    private(set) var heardSound: SoundKind?
+    @ObservationIgnored private var sounds: SoundClassifier?
     var speaker = SpeakerLanguage.all[0]
     /// Set when translation models for the chosen pair are installed (iOS 26+).
     @ObservationIgnored var translate: ((String) async -> String?)?
@@ -151,6 +154,7 @@ final class LiveCaptioner {
         task?.cancel()
         if #available(iOS 26, *) { (modern as? ModernSpeech)?.stop() }
         modern = nil
+        sounds = nil
         commit()
         listening = false
         level = -100
@@ -193,8 +197,17 @@ final class LiveCaptioner {
         }
         input.removeTap(onBus: 0)
         var frames: Double = 0
+        let sounds = SoundClassifier(format: format)
+        sounds?.onAlert = { [weak self] kind in
+            self?.heardSound = kind
+            SoundHaptics.play(kind)
+            WatchLink.shared.sound(kind)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { if self?.heardSound == kind { self?.heardSound = nil } }
+        }
+        self.sounds = sounds
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
             guard let self else { return }
+            sounds?.analyze(buf)
             if #available(iOS 26, *), let m = self.modern as? ModernSpeech { m.append(buf) }
             else { self.lock.lock(); self.request?.append(buf); self.lock.unlock() }
             frames += Double(buf.frameLength)
@@ -351,7 +364,7 @@ struct LiveCaptionsView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if captioner.loudAlert { loudBanner }
+            if let k = captioner.heardSound { soundBanner(k) } else if captioner.loudAlert { loudBanner }
             captions
             controls
         }
@@ -471,6 +484,15 @@ struct LiveCaptionsView: View {
             .frame(maxWidth: .infinity, minHeight: 56)
             .foregroundStyle(.white)
             .background(A11yColor.fill(.red))
+            .accessibilityAddTraits(.updatesFrequently)
+    }
+
+    private func soundBanner(_ k: SoundKind) -> some View {
+        Label(k.name, systemImage: k.icon)
+            .font(.title2.bold())
+            .frame(maxWidth: .infinity, minHeight: 56)
+            .foregroundStyle(.white)
+            .background(A11yColor.fill(k.urgent ? .red : .indigo))
             .accessibilityAddTraits(.updatesFrequently)
     }
 

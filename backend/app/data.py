@@ -132,7 +132,25 @@ def departures(global_id: str, limit: int = 10) -> dict:
             "barrier_free": d.get("barrierFree"),
         } for d in raw]
 
-    return cache.get(f"dep:{global_id}:{limit}", 30, fetch)
+    res = dict(cache.get(f"dep:{global_id}:{limit}", 30, fetch))
+    res["data"] = with_minutes(res["data"], time.time())
+    return res
+
+
+def with_minutes(deps: list[dict], now_s: float) -> list[dict]:
+    """Adds `minutes` until departure. MVG's realtime value is used only when it is plausible
+    (within 3 h of the planned time; a stray value a day off was seen); gone departures are dropped."""
+    out = []
+    for d in deps:
+        planned, rt = d.get("planned"), d.get("realtime")
+        t = rt if rt and planned and abs(rt - planned) <= 3 * 3600 * 1000 else planned
+        if t is None:
+            continue
+        minutes = round((t / 1000 - now_s) / 60)
+        if minutes < 0 or d.get("cancelled"):
+            continue
+        out.append(d | {"minutes": minutes})
+    return sorted(out, key=lambda d: d["minutes"])
 
 
 # --------------------------------------------------------------------------- lifts (DB FaSta)

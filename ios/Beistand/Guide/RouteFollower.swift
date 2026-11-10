@@ -109,6 +109,11 @@ struct RouteFollower {
 
     var firstInstruction: String { steps.first?.instruction ?? "" }
 
+    /// The point the person walks to now, and what happens there.
+    var nextStep: RouteStep? { done || steps.isEmpty ? nil : steps[min(next, steps.count - 1)] }
+    /// The next point is the destination itself.
+    var nextIsFinal: Bool { next >= steps.count - 1 }
+
     /// Feed each GPS fix. Returns what to say or do, if anything.
     mutating func update(_ p: Coord, accuracy: Double = 10) -> Event? {
         guard !done, !steps.isEmpty else { return nil }

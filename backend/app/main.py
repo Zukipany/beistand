@@ -11,10 +11,10 @@ from html import escape
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
-from . import crossings, data, guide, llm
+from . import crossings, data, guide, llm, orient, ride, scooters, streetview
 from .config import settings
 from .lang import norm, tr
 from .ladder import Contact, Incident, Ladder, Location, State, Trigger
@@ -295,6 +295,80 @@ def warnings(lat: float, lon: float, lang: str = "en") -> dict:
     return _data(data.weather, lat, lon, lang)
 
 
+@app.get("/landmarks")
+def landmarks(lat: float, lon: float, radius_m: int = Query(150, ge=30, le=400), lang: str = "en") -> dict:
+    """Named streets, shops, stops and entrances around the person, for camera orientation."""
+    return _data(orient.landmarks, lat, lon, radius_m, lang)
+
+
+@app.get("/stations/search")
+def station_search(q: str = Query(..., min_length=2, max_length=80)) -> dict:
+    return _data(ride.search, q)
+
+
+@app.get("/trip")
+def ride_trip(to_id: str = Query(..., pattern=r"^[a-z]{2}:\d+:\d+$"), from_id: str | None = Query(None, pattern=r"^[a-z]{2}:\d+:\d+$"),
+              lat: float | None = None, lon: float | None = None) -> dict:
+    """The next connection with every stop and its expected time, for the ride helper."""
+    return _data(ride.trip, to_id, from_id, lat, lon)
+
+
+@app.get("/walkways")
+def walk_paths(lat: float, lon: float, radius_m: int = Query(250, ge=50, le=400)) -> dict:
+    """Footways, pedestrian zones and road sidewalks as lines, so the test drive walks where people walk."""
+    return _data(orient.walkways, lat, lon, radius_m)
+
+
+@app.get("/scooters")
+def nearby_scooters(lat: float, lon: float, radius_m: int = Query(150, ge=10, le=500)) -> dict:
+    """Parked shared e-scooters and bikes nearby (open GBFS feeds), so the phone can warn before a trip."""
+    return scooters.nearby(lat, lon, radius_m)
+
+
+@app.get("/streetview/status")
+def streetview_status() -> dict:
+    return {"providers": streetview.providers()}
+
+
+@app.get("/drive/viewer", response_class=HTMLResponse)
+def drive_viewer(lat: float, lon: float, heading: float = 0) -> str:
+    """Walking street viewer (MapillaryJS) for the app's test drive."""
+    return streetview.viewer_page(lat, lon, heading % 360)
+
+
+@app.get("/drive/nearest")
+def drive_nearest(lat: float, lon: float, heading: float = 0, exclude: str | None = None) -> dict:
+    try:
+        return streetview.nearest(lat, lon, heading % 360, exclude)
+    except streetview.NoImagery as exc:
+        raise HTTPException(404 if settings.mapillary_token else 503, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"mapillary failed: {exc}") from exc
+
+
+@app.get("/streetview")
+def street_picture(lat: float = 0, lon: float = 0, heading: float = 0, pitch: float = Query(0, ge=-60, le=60),
+                   fov: float = Query(80, ge=30, le=120), image_id: str | None = Query(None, pattern=r"^\d{1,20}$")) -> Response:
+    """Street-level picture for the test drive (Google Street View or Mapillary; or one Mapillary picture by id)."""
+    try:
+        p = (streetview.by_id(image_id, heading % 360, fov) if image_id
+             else streetview.picture(lat, lon, heading % 360, pitch, fov))
+    except streetview.NoImagery as exc:
+        raise HTTPException(404 if streetview.providers() else 503, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"street picture failed: {exc}") from exc
+    return Response(p.jpeg, media_type="image/jpeg", headers={
+        "X-Provider": p.provider, "X-Lat": f"{p.lat:.6f}", "X-Lon": f"{p.lon:.6f}", "X-Captured": p.captured or "",
+        "Cache-Control": "no-store"})
+
+
+@app.get("/access")
+def place_access(lat: float, lon: float, lang: str = "en", name: str | None = None,
+                 radius_m: int = Query(120, ge=30, le=300)) -> dict:
+    """Accessibility at a destination: step-free, lifts, entrances, toilets, steps (OpenStreetMap)."""
+    return _data(orient.access, lat, lon, lang, name, radius_m)
+
+
 @app.get("/stations")
 def stations(lat: float, lon: float) -> dict:
     return _data(data.nearby_stations, lat, lon)
@@ -370,6 +444,7 @@ class DescribeIn(BaseModel):
     question: str | None = None
     lang: str = "en"
     purpose: str = "lost"   # "lost" (where am I, what's ahead) | "magnify" (what is this, read it)
+    nearby: list[str] = Field(default_factory=list, max_length=12)   # "Rossmann (drugstore), 20 m slightly right"
 
 
 @app.get("/guide/prompt")
@@ -387,7 +462,8 @@ def geocode(q: str = Query(..., min_length=2, max_length=200), lat: float = 48.1
 def describe(body: DescribeIn) -> dict:
     """One-photo fallback when Gemini Live is not available."""
     try:
-        return guide.describe(body.image_b64, body.address, body.heading, body.question, body.lang, body.purpose)
+        return guide.describe(body.image_b64, body.address, body.heading, body.question, body.lang, body.purpose,
+                              nearby=body.nearby)
     except llm.LLMUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     except (httpx.HTTPError, ValueError) as exc:

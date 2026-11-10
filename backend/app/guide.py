@@ -37,6 +37,8 @@ Sicherheit – diese Regeln brechen ist nie erlaubt:
 Werkzeuge:
 - plan_route(destination): sobald die Person sagt, wohin sie will. Danach führst du Schritt für Schritt.
 - crossing_info(): welche Ampeln in der Nähe sind und ob sie ein Ton- oder Tastsignal haben (Daten der Stadt München).
+- next_departures(): die nächsten Züge, Trams und Busse an der nächsten Haltestelle.
+- where_is(thing): wo das Telefon auf diesem Weg zuletzt etwas bemerkt hat, z. B. eine Bank oder eine Tür.
 - call_emergency_contact(reason): nur nach Zustimmung der Person.
 
 Nachrichten, die mit [KONTEXT] beginnen, kommen vom Telefon (Standort, Richtung, nächster Routenschritt).
@@ -71,6 +73,8 @@ Safety. Breaking these rules is never allowed:
 Tools:
 - plan_route(destination): as soon as the person says where they want to go. Then guide step by step.
 - crossing_info(): which traffic lights are near and whether they have a sound or touch signal (Munich city data).
+- next_departures(): the next trains, trams and buses at the nearest stop.
+- where_is(thing): where the phone last noticed something on this walk, such as a bench or a door.
 - call_emergency_contact(reason): only with the person's consent.
 
 Messages starting with [CONTEXT] come from the phone (location, direction, next route step).
@@ -101,6 +105,18 @@ TOOLS = [{
             "name": "crossing_info",
             "description": "Nearest traffic lights from the city's data and whether they have a sound or touch signal for blind people. Use when the person asks about a crossing. Never say a street is safe to cross.",
             "parameters": {"type": "OBJECT", "properties": {}},
+        },
+        {
+            "name": "next_departures",
+            "description": "Next departures (line, destination, minutes, platform) at the nearest public transport stop. Use when the person asks about trains, the U-Bahn, trams or buses.",
+            "parameters": {"type": "OBJECT", "properties": {}},
+        },
+        {
+            "name": "where_is",
+            "description": "Where the phone last noticed something during this walk, e.g. a bench, a door, steps or a bike (from the last 3 minutes).",
+            "parameters": {"type": "OBJECT", "properties": {
+                "thing": {"type": "STRING", "description": "What the person is looking for, in their words"}},
+                "required": ["thing"]},
         },
         {
             "name": "call_emergency_contact",
@@ -157,12 +173,16 @@ Never give medical advice beyond reading what is printed. "signs": the text you 
 
 
 def describe(image_b64: str, address: str | None, heading: float | None, question: str | None,
-             lang: str = "en", purpose: str = "lost") -> dict:
+             lang: str = "en", purpose: str = "lost", nearby: list[str] | None = None) -> dict:
     ctx = []
     if address:
         ctx.append(f"Location from GPS: {address}.")
     if heading is not None:
         ctx.append(f"The camera points roughly {compass(heading, 'en')}.")
+    if nearby and purpose != "magnify":
+        # Map facts, so the model names real places instead of guessing; it must still check the picture.
+        ctx.append("Named places from the map, relative to where the camera points (only mention one if the "
+                   "picture fits): " + "; ".join(nearby[:12]) + ".")
     if purpose == "magnify":
         ctx.append(f"The person asks: {question}" if question else "What is this, and what does it say?")
     else:

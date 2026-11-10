@@ -154,7 +154,7 @@ def test_guide_prompt_keeps_safety_rules():
     assert en["voice_language"] == "en-US"
     assert "low vision" in guide.prompt_for("low_vision", "en")["system_prompt"]
     names = {f["name"] for f in guide.TOOLS[0]["functionDeclarations"]}
-    assert names == {"plan_route", "call_emergency_contact"}
+    assert {"plan_route", "call_emergency_contact"} <= names
 
 
 def test_direct_route_and_compass():
@@ -279,3 +279,307 @@ def test_route_has_crossings_and_blind_picks_alternative(monkeypatch):
     assert walk["distance_m"] == 744                                  # walkers keep the shortest
     assert blind["distance_m"] == 800 and blind["alternatives_checked"] == 2
     assert any(x["signal"] == "sound" for x in blind["crossings"])
+
+
+def test_departure_minutes_ignore_implausible_realtime():
+    from app.data import with_minutes
+    now = 1_000_000.0                                    # seconds
+    deps = [
+        {"line": "U3", "planned": (now + 300) * 1000, "realtime": (now - 86_000) * 1000},   # realtime a day off: use planned
+        {"line": "S1", "planned": (now + 60) * 1000, "realtime": (now + 360) * 1000},       # delayed: use realtime
+        {"line": "S2", "planned": (now - 120) * 1000, "realtime": None},                    # gone
+        {"line": "S3", "planned": (now + 30) * 1000, "realtime": None, "cancelled": True},  # cancelled
+    ]
+    out = with_minutes(deps, now)
+    assert [(d["line"], d["minutes"]) for d in out] == [("U3", 5), ("S1", 6)]
+
+
+def test_guide_tools_declared():
+    from app import guide
+    names = {f["name"] for f in guide.TOOLS[0]["functionDeclarations"]}
+    assert {"plan_route", "crossing_info", "next_departures", "where_is", "call_emergency_contact"} <= names
+    assert "next_departures()" in guide.prompt_for("sight", "en")["system_prompt"]
+
+
+# --------------------------------------------------------------------------- camera orientation
+
+def test_orient_bearing_and_distance():
+    from app import orient
+    here = (48.1374, 11.5755)
+    assert abs(orient.bearing(here, (48.1474, 11.5755)) - 0) < 0.5           # north
+    assert abs(orient.bearing(here, (48.1374, 11.5855)) - 90) < 0.5          # east
+    assert 1100 < orient.distance(here, (48.1474, 11.5755)) < 1120
+
+
+def test_orient_parse_streets_shops_entrances():
+    from app import orient
+    here = (48.1374, 11.5755)
+    elements = [
+        # an east-west street 20 m north of the person
+        {"type": "way", "tags": {"highway": "pedestrian", "name": "Kaufingerstraße"},
+         "geometry": [{"lat": 48.13758, "lon": 11.5740}, {"lat": 48.13758, "lon": 11.5770}]},
+        # the same street again, further away: one entry per name
+        {"type": "way", "tags": {"highway": "pedestrian", "name": "Kaufingerstraße"},
+         "geometry": [{"lat": 48.1390, "lon": 11.5740}, {"lat": 48.1390, "lon": 11.5770}]},
+        {"type": "node", "lat": 48.1375, "lon": 11.5757, "tags": {"shop": "chemist", "name": "Rossmann"}},
+        {"type": "node", "lat": 48.1372, "lon": 11.5755, "tags": {"railway": "subway_entrance"}},
+        {"type": "node", "lat": 48.1380, "lon": 11.5760, "tags": {"amenity": "bench"}},          # no name: dropped
+    ]
+    out = orient.parse(elements, here, "en")
+    names = [o["name"] for o in out]
+    assert names.count("Kaufingerstraße") == 1 and "Rossmann" in names and "U-Bahn entrance" in names
+    street = next(o for o in out if o["name"] == "Kaufingerstraße")
+    assert 15 <= street["distance_m"] <= 25 and street["street_bearing"] in (89, 90, 91)
+    assert next(o for o in out if o["name"] == "Rossmann")["kind"] == "drugstore"
+    assert out == sorted(out, key=lambda o: o["distance_m"])
+    assert next(o for o in orient.parse(elements, here, "de") if o["name"] == "Rossmann")["kind"] == "Drogerie"
+
+
+def test_landmarks_endpoint(monkeypatch):
+    from app import orient
+    from app.main import app
+    monkeypatch.setattr(orient.data.cache, "get", lambda key, ttl, fetch: {"data": [
+        {"type": "node", "lat": 48.1375, "lon": 11.5757, "tags": {"shop": "bakery", "name": "Rischart"}}],
+        "fetched_at": 0, "age_s": 0, "stale": False})
+    r = TestClient(app).get("/landmarks", params={"lat": 48.1374, "lon": 11.5755})
+    assert r.status_code == 200 and r.json()["data"][0]["kind"] == "bakery"
+
+
+def test_describe_passes_map_places(monkeypatch):
+    from app import guide
+    seen = {}
+    def fake_ask(system, content, max_tokens=0, task=""):
+        seen["text"] = content[-1]["text"]
+        return '{"spoken": "ok", "signs": []}'
+    monkeypatch.setattr(guide, "ask", fake_ask)
+    guide.describe("AAAA", None, 10.0, None, "en", nearby=["Rossmann (drugstore), 20 m ahead"])
+    assert "Rossmann (drugstore), 20 m ahead" in seen["text"]
+
+
+def test_access_summary_from_osm_tags():
+    from app import orient
+    here = (48.1374, 11.5755)
+    els = [
+        {"type": "node", "lat": 48.13742, "lon": 11.57552, "tags": {"amenity": "cafe", "name": "Café Glockenspiel",
+                                                                   "wheelchair": "limited", "toilets:wheelchair": "yes"}},
+        {"type": "node", "lat": 48.1376, "lon": 11.5755, "tags": {"highway": "elevator", "level": "-1;0"}},
+        {"type": "node", "lat": 48.1375, "lon": 11.5756, "tags": {"entrance": "main", "wheelchair": "yes", "automatic_door": "yes"}},
+        {"type": "node", "lat": 48.1380, "lon": 11.5760, "tags": {"amenity": "toilets", "wheelchair": "yes", "centralkey": "eurokey"}},
+        {"type": "way", "tags": {"highway": "steps"}, "geometry": [{"lat": 48.1371, "lon": 11.5755}, {"lat": 48.1371, "lon": 11.5756}]},
+        {"type": "node", "lat": 48.1373, "lon": 11.5754, "tags": {"kerb": "lowered"}},
+    ]
+    out = orient.summarize_access(els, here, "en")
+    assert out["place"]["name"] == "Café Glockenspiel" and out["place"]["wheelchair"] == "limited"
+    assert len(out["elevators"]) == 1 and out["lowered_kerbs"] == 1
+    s = out["spoken"]
+    assert "partly step-free" in s and "wheelchair toilet" in s and "1 lift nearby" in s
+    assert "automatic door" in s and "Euro key" in s and "steps without a ramp" in s
+    de = orient.summarize_access(els, here, "de")["spoken"]
+    assert "teilweise stufenlos" in de and "Aufzug" in de
+
+
+def test_access_unknown_is_not_accessible():
+    from app import orient
+    els = [{"type": "node", "lat": 48.13741, "lon": 11.57551, "tags": {"shop": "bakery", "name": "Rischart"}}]
+    s = orient.summarize_access(els, (48.1374, 11.5755), "en")["spoken"]
+    assert "nobody has entered" in s and "step-free." not in s.replace("whether it is step-free", "")
+    assert "no accessibility information" in orient.summarize_access([], (48.1, 11.5), "en")["spoken"]
+
+
+def test_osm_map_api_shaped_like_overpass():
+    from app import orient
+    raw = [
+        {"type": "node", "id": 1, "lat": 48.1, "lon": 11.5},
+        {"type": "node", "id": 2, "lat": 48.1, "lon": 11.501},
+        {"type": "node", "id": 3, "lat": 48.1001, "lon": 11.5005, "tags": {"highway": "elevator"}},
+        {"type": "way", "id": 9, "nodes": [1, 2], "tags": {"highway": "residential", "name": "Teststraße"}},
+        {"type": "way", "id": 10, "nodes": [1, 2]},                     # untagged: geometry only
+    ]
+    els = orient.osm_to_elements(raw)
+    assert [e["id"] for e in els] == [3, 9]
+    assert els[1]["geometry"] == [{"lat": 48.1, "lon": 11.5}, {"lat": 48.1, "lon": 11.501}]
+    assert orient.is_landmark(els[1]["tags"]) and not orient.is_landmark(els[0]["tags"])
+
+
+# --------------------------------------------------------------------------- test drive street pictures
+
+def test_streetview_pick_prefers_near_and_facing():
+    from app import streetview
+    here = (48.1374, 11.5755)
+    def img(i, lat, lon, angle=None, pano=False):
+        return {"id": i, "geometry": {"coordinates": [lon, lat]}, "computed_compass_angle": angle, "is_pano": pano}
+    ims = [img("behind", 48.13741, 11.57551, angle=180),          # right here but looking the wrong way
+           img("ahead", 48.13750, 11.57550, angle=10),            # 11 m away, looking north
+           img("far", 48.1380, 11.5755, angle=0)]
+    assert streetview.pick(ims, here, 0)["id"] == "ahead"
+    assert streetview.pick(ims, here, 180)["id"] == "behind"
+    assert streetview.pick(ims + [img("pano", 48.13742, 11.5755, pano=True)], here, 90)["id"] == "pano"
+    assert streetview.pick([img("x", 48.1374, 11.5755, angle=None)], here, 0) is None
+
+
+def test_streetview_pano_crop_wraps():
+    from app import streetview
+    x0, y0, w, h = streetview.pano_crop(3600, 1800, heading=90, pano_angle=90, fov=80)
+    assert w == 800 and x0 == 1400 and h == 1066 and 0 <= y0 < 1800 - h + 1    # centre of the panorama
+    x0, *_ = streetview.pano_crop(3600, 1800, heading=270, pano_angle=90, fov=80)
+    assert x0 == 3200                                                            # behind: crosses the seam
+
+
+def test_streetview_crop_pastes_both_sides_of_seam():
+    import io
+    from PIL import Image
+    from app import streetview
+    img = Image.new("RGB", (100, 50), (255, 0, 0))
+    img.paste((0, 0, 255), (90, 0, 100, 50))                    # right edge blue
+    buf = io.BytesIO(); img.save(buf, "JPEG")
+    out = Image.open(io.BytesIO(streetview._crop(buf.getvalue(), (90, 0, 20, 40))))
+    assert out.size == (20, 40)
+    r, g, b = out.getpixel((2, 20)); assert b > 200 and r < 60     # from the right edge
+    r, g, b = out.getpixel((17, 20)); assert r > 200 and b < 60    # wrapped to the left edge
+
+
+def test_streetview_without_key_is_503(monkeypatch):
+    from app import streetview
+    from app.main import app
+    monkeypatch.setattr(streetview, "providers", lambda: [])
+    r = TestClient(app).get("/streetview", params={"lat": 48.1, "lon": 11.5, "heading": 0})
+    assert r.status_code == 503 and "MAPILLARY_TOKEN" in r.json()["detail"]
+
+
+def test_drive_viewer_page_and_nearest(monkeypatch):
+    from app import streetview
+    from app.main import app
+    c = TestClient(app)
+    page = c.get("/drive/viewer", params={"lat": 48.1374, "lon": 11.5755, "heading": 90}).text
+    assert "mapillary-js@4.1.2" in page and "[48.1374, 11.5755, 90.0]" in page
+    assert "messageHandlers.drive" in page and "NavigationDirection" in page
+
+    class R:
+        def __init__(self, j): self._j = j
+        def raise_for_status(self): pass
+        def json(self): return self._j
+    calls = []
+    monkeypatch.setattr(streetview, "_walk_near", lambda lat, lon: [])
+    def fake_get(url, params=None, **kw):
+        calls.append(params["bbox"])
+        if len(calls) < 3:
+            return R({"data": []})                                  # nothing within 50 m or 80 m …
+        return R({"data": [{"id": "123", "geometry": {"coordinates": [11.5757, 48.1376]}, "is_pano": True}]})
+    monkeypatch.setattr(streetview, "settings", type("S", (), {"mapillary_token": "t", "google_maps_api_key": ""})())
+    monkeypatch.setattr(streetview.httpx, "get", fake_get)
+    r = c.get("/drive/nearest", params={"lat": 48.1374, "lon": 11.5755, "heading": 0})
+    assert r.status_code == 200 and r.json() == {"id": "123", "lat": 48.1376, "lon": 11.5757, "is_pano": True}
+    assert len(calls) == 3                                          # … so it looked within 200 m
+
+
+def test_streetview_rejects_bad_image_id():
+    from app.main import app
+    assert TestClient(app).get("/streetview", params={"image_id": "../x"}).status_code == 422
+
+
+def test_streetview_skips_photos_with_untrustworthy_position():
+    from app import streetview
+    here = (48.1388, 11.5672)
+    good = {"id": "good", "is_pano": True, "geometry": {"coordinates": [11.56727, 48.13889]},
+            "computed_geometry": {"coordinates": [11.56728, 48.13887]}}
+    moved = {"id": "moved", "is_pano": True, "geometry": {"coordinates": [11.56720, 48.13880]},      # right here …
+             "computed_geometry": {"coordinates": [11.56780, 48.13869]}}                              # … but really 45 m away
+    assert streetview.position(moved) is None
+    assert streetview.pick([moved, good], here, 90)["id"] == "good"
+    assert streetview.position({"geometry": {"coordinates": [11.5, 48.1]}}) == (48.1, 11.5)          # no correction: GPS
+
+
+def test_landmarks_ice_cream_and_unnamed_toilets():
+    from app import orient
+    here = (48.1374, 11.5755)
+    els = [
+        {"type": "node", "lat": 48.1375, "lon": 11.5756, "tags": {"amenity": "ice_cream", "name": "Ballabeni"}},
+        {"type": "node", "lat": 48.1376, "lon": 11.5757, "tags": {"amenity": "cafe", "cuisine": "coffee_shop;ice_cream", "name": "Eiscafé Sarcletti"}},
+        {"type": "node", "lat": 48.1377, "lon": 11.5758, "tags": {"amenity": "toilets", "wheelchair": "yes"}},
+    ]
+    kinds = {o["name"]: o["kind"] for o in orient.parse(els, here, "en")}
+    assert kinds == {"Ballabeni": "ice cream", "Eiscafé Sarcletti": "ice cream", "toilets": "toilets"}
+    assert orient.is_landmark({"amenity": "toilets"})
+
+
+def test_scooters_near_sorted_and_filtered():
+    from app import scooters
+    here = (48.1374, 11.5755)
+    vs = [{"id": "dott:a", "lat": 48.13745, "lon": 11.5755, "kind": "scooter"},     # ~6 m
+          {"id": "dott:b", "lat": 48.1380, "lon": 11.5755, "kind": "bike"},         # ~67 m
+          {"id": "dott:c", "lat": 48.1400, "lon": 11.5755, "kind": "scooter"}]      # ~290 m
+    out = scooters.near(vs, here, 100)
+    assert [v["id"] for v in out] == ["dott:a", "dott:b"] and 5 < out[0]["distance_m"] < 7
+
+
+def test_scooters_parse_feed(monkeypatch):
+    from app import scooters
+    class R:
+        def __init__(self, j): self._j = j
+        def raise_for_status(self): pass
+        def json(self): return self._j
+    def fake_get(url, **kw):
+        if url.endswith("vehicle_types.json"):
+            return R({"data": {"vehicle_types": [{"vehicle_type_id": "s", "form_factor": "scooter"},
+                                                 {"vehicle_type_id": "b", "form_factor": "bicycle"}]}})
+        return R({"data": {"bikes": [
+            {"bike_id": "1", "lat": 48.1, "lon": 11.5, "vehicle_type_id": "s"},
+            {"bike_id": "2", "lat": 48.1, "lon": 11.5, "vehicle_type_id": "b"},
+            {"bike_id": "3", "lat": 48.1, "lon": 11.5, "vehicle_type_id": "s", "is_disabled": True}]}})
+    monkeypatch.setattr(scooters.httpx, "get", fake_get)
+    vs = scooters.vehicles("https://gbfs.example.org/public/v2/test/free_bike_status.json")
+    assert [(v["id"].split(":")[1], v["kind"]) for v in vs] == [("1", "scooter"), ("2", "bike")]
+
+
+def test_walk_lines_footways_and_sidewalks():
+    from app import orient
+    road = [{"lat": 48.1370, "lon": 11.5700}, {"lat": 48.1370, "lon": 11.5720}]       # east-west road
+    els = [
+        {"type": "way", "tags": {"highway": "footway"}, "geometry": [{"lat": 48.1380, "lon": 11.5700}, {"lat": 48.1381, "lon": 11.5701}]},
+        {"type": "way", "tags": {"highway": "primary", "sidewalk": "both"}, "geometry": road},
+        {"type": "way", "tags": {"highway": "primary", "sidewalk": "no"}, "geometry": road},             # no sidewalk: not walkable
+        {"type": "way", "tags": {"building": "yes"}, "geometry": road},
+    ]
+    lines = orient.walk_lines(els)
+    assert len(lines) == 3                                     # footway + left and right sidewalk
+    middle = (48.1370, 11.5710)
+    sides = sorted(round(orient.distance(middle, orient.nearest_on_line(middle, l)[0]), 1) for l in lines[1:])
+    assert sides == [6.0, 6.0]                                 # 6 m either side of the road's middle
+    assert 5.5 < orient.distance_to_lines(middle, lines) < 6.5
+
+
+def test_streetview_prefers_pavement_and_walking_sequences():
+    from app import streetview
+    here = (48.1370, 11.5710)
+    sidewalk = [[(48.13705, 11.5700), (48.13705, 11.5720)]]               # ~5.5 m north of here
+    def im(i, lat, seq, t):
+        return {"id": i, "is_pano": True, "geometry": {"coordinates": [11.5710, lat]}, "sequence": seq, "captured_at": t}
+    car = [im("car1", 48.13700, "car", 0), im("car2", 48.13700 + 10 / 111320, "car", 1000)]        # 10 m in 1 s
+    walker = [im("walk1", 48.13705, "walk", 0), im("walk2", 48.13705 + 2 / 111320, "walk", 2000)]  # 2 m in 2 s
+    speeds = streetview.sequence_speeds(car + walker)
+    assert speeds["car"] > 9 and speeds["walk"] < 1.5
+    # The car photo is right here, the walker's photo 5.5 m away on the sidewalk: the walker's wins.
+    assert streetview.pick(car[:1] + walker[:1], here, 0, walk=sidewalk, speeds=speeds)["id"] == "walk1"
+    # Without walkway and speed knowledge the nearest still wins (old behaviour).
+    assert streetview.pick(car[:1] + walker[:1], here, 0)["id"] == "car1"
+
+
+def test_parse_trip_legs_stops_and_exit():
+    from app import ride
+    conn = {"parts": [
+        {"line": {"label": "U6", "transportType": "UBAHN", "destination": "Fröttmaning"}, "realTime": True,
+         "from": {"name": "Marienplatz", "stationGlobalId": "de:09162:2", "platform": 1,
+                  "plannedDeparture": "2026-11-09T22:53:00+01:00", "departureDelayInMinutes": 1},
+         "intermediateStops": [{"name": "Odeonsplatz", "plannedDeparture": "2026-11-09T22:54:00+01:00", "arrivalDelayInMinutes": 1}],
+         "to": {"name": "Münchner Freiheit", "plannedDeparture": "2026-11-09T22:58:00+01:00",
+                "hasOutOfOrderElevator": True}, "exitLetter": "B"},
+        {"line": {"transportType": "PEDESTRIAN"}, "from": {}, "to": {}},
+    ]}
+    legs = ride.parse_trip(conn)["legs"]
+    assert len(legs) == 1
+    leg = legs[0]
+    assert (leg["line"], leg["direction"], leg["from"]["platform"]) == ("U6", "Fröttmaning", 1)
+    planned = 1794261180          # 22:53 CET
+    assert leg["from"]["time"] == planned + 60                                  # one minute late
+    assert leg["stops"][0]["name"] == "Odeonsplatz" and leg["stops"][0]["time"] == planned + 120
+    assert leg["to"]["exit"] == "B" and leg["to"]["lift_out_of_order"] is True
