@@ -106,7 +106,10 @@ Sign-up asks **what is hard, never for a diagnosis**. The app talks from the fir
 | Choose destination on a map (search or drop a pin) with accessibility card | ✅ | Step-free, lifts, entrances, accessible toilets, steps, tactile paving from OpenStreetMap; "Take me there" starts the guide. |
 | "What's in front of me?" without an AI key | ✅ | Compass + map + signs the phone reads + LiDAR; with a key, the AI gets the nearby places as facts. |
 | Guide asks: "next departures", "where was the bench?" | ✅ | Live MVG departures (also a button in simple mode); a 3-minute memory of what the camera recognised. |
-| Morning check-in, medicine taps, day anchor, way home, lift rerouting | 📝 | See [PLAN-ADVANCED.md](PLAN-ADVANCED.md). |
+| Morning check-in, medicine reminders, day anchor, take me home | 🧪 | Shown for older people and memory problems; reminders are local notifications. |
+| Talk with pictures, type to speak | 🧪 | Home section "Talking" for people who cannot speak. |
+| Colour names, "Is this my train?" | 🧪 | Magnifier button; camera reads the arriving train's display during a ride. |
+| Lift rerouting | 📝 | See [PLAN-ADVANCED.md](PLAN-ADVANCED.md). |
 
 ---
 

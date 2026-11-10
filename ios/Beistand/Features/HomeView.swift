@@ -20,6 +20,7 @@ struct HomeView: View {
     @State private var showRide = false
     @State private var showMore = false
     @State private var showStory = false
+    @State private var showBoard = false
     @State private var status = ""
     @State private var tip: String?
 
@@ -28,6 +29,11 @@ struct HomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
                     statusCard
+                    if store.has(.dementia) { DayAnchorCard() }
+                    if (store.has(.older) || store.has(.dementia)), CheckIn.shouldAsk(now: Date(), lastAnswered: store.lastCheckIn) {
+                        CheckInCard()
+                    }
+                    if !store.medicines.isEmpty { MedicineCard() }
                     if !storyHome {
                         Button { showStory = true } label: {
                             Label(tr("Step by step: answer a few questions", "Schritt für Schritt: ein paar Fragen beantworten"),
@@ -83,6 +89,7 @@ struct HomeView: View {
             .fullScreenCover(isPresented: $showCounter) { CounterModeView() }
             .sheet(isPresented: $showMap) { DestinationMapView() }
             .fullScreenCover(isPresented: $showRide) { RideView() }
+            .fullScreenCover(isPresented: $showBoard) { PictureBoard() }
             .fullScreenCover(isPresented: $showStory) {
                 ScrollView { StoryView().padding(16) }.background(BeistandBackground())
             }
@@ -176,7 +183,7 @@ struct HomeView: View {
 
     // MARK: sections by what the person needs
 
-    enum HomeSection: Hashable { case around, hearing, reading }
+    enum HomeSection: Hashable { case talk, around, hearing, reading }
 
     /// How much a section matters for this person (0 = not their need).
     private func relevance(_ s: HomeSection) -> Int {
@@ -189,14 +196,16 @@ struct HomeView: View {
         case .reading:
             return [Mode.lowVision, .easyReading].contains(where: store.has) ? 3
                  : [Mode.older, .dementia].contains(where: store.has) ? 2 : 0
+        case .talk:
+            return store.has(.speech) ? 4 : store.has(.hearing) || store.has(.deafblind) ? 1 : 0
         }
     }
 
     private var primarySections: [HomeSection] {
-        [HomeSection.around, .hearing, .reading].filter { relevance($0) >= 2 }.sorted { relevance($0) > relevance($1) }
+        [HomeSection.talk, .around, .hearing, .reading].filter { relevance($0) >= 2 }.sorted { relevance($0) > relevance($1) }
     }
     private var otherSections: [HomeSection] {
-        [HomeSection.around, .hearing, .reading].filter { relevance($0) < 2 }
+        [HomeSection.talk, .around, .hearing, .reading].filter { relevance($0) < 2 }
     }
 
     /// Older people on their own, or memory problems: few big buttons, nothing to get lost in.
@@ -206,6 +215,16 @@ struct HomeView: View {
 
     @ViewBuilder private func section(_ s: HomeSection) -> some View {
         switch s {
+        case .talk:
+            TileSection(title: tr("Talking", "Sprechen"), icon: "bubble.left.and.bubble.right.fill",
+                        subtitle: tr("Let the phone speak for you", "Das Telefon spricht für Sie")) {
+                Tile(title: tr("Talk with pictures", "Mit Bildern sprechen"), icon: "square.grid.2x2.fill", tint: .indigo,
+                     subtitle: tr("Tap, and it is said", "Tippen, und es wird gesagt"),
+                     explanation: tr("Pictures for needs, feelings and questions. Tap one and the phone says it. You can also type.",
+                                     "Bilder für Bedürfnisse, Gefühle und Fragen. Tippen, und das Telefon sagt es. Sie können auch tippen.")) { showBoard = true }
+                Tile(title: tr("Counter mode", "Schalter-Modus"), icon: "rectangle.split.1x2", tint: .blue,
+                     subtitle: tr("Type, they read and hear it", "Tippen, sie lesen und hören es")) { showCounter = true }
+            }
         case .around:
             TileSection(title: tr("Getting around", "Unterwegs"), icon: "figure.walk",
                         subtitle: tr("Find your way, trains, step-free places", "Weg finden, Bahn, stufenlose Orte")) {
@@ -411,6 +430,12 @@ struct FamilySettingsView: View {
                         } label: {
                             Label(tr("Voice", "Stimme"), systemImage: "waveform")
                         }
+                        NavigationLink {
+                            MedicinesView()
+                        } label: {
+                            Label(tr("Medicines and reminders", "Medikamente und Erinnerungen"), systemImage: "pills.fill")
+                        }
+                        HomeAddressRow()
                         Picker(tr("What the guide says", "Was die Begleitung sagt"), selection: $store.guideDetail) {
                             ForEach(GuideDetail.allCases.filter { store.devMode || $0 != .everything }) { Text($0.name).tag($0) }
                         }
@@ -477,6 +502,12 @@ struct FamilySettingsView: View {
                     }
                     Section {
                         Button(tr("Set up again", "Neu einrichten"), role: .destructive) { store.profile = nil; dismiss() }
+                    } footer: {
+                        // Which build is on the phone (the app's own build time).
+                        if let url = Bundle.main.executableURL,
+                           let d = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date {
+                            Text(tr("Build ", "Version ") + d.formatted(date: .abbreviated, time: .shortened))
+                        }
                     }
                 }
             }

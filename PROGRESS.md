@@ -255,3 +255,11 @@ Target: hackaTUM 27–29 Nov 2026 – older people mode + safety layer fully, si
 - Mac: `ios/make-mac-project.sh` makes `BeistandMac.xcodeproj` (app only, no Watch, iOS minimum 26 for Catalyst);
   build with `-destination 'platform=macOS,arch=arm64,variant=Mac Catalyst'` and ad-hoc signing (no Apple account).
 - Verified: 95 app tests; installed on the iPhone 16 Pro. NOT verified in a real building (door/window labels, stairs).
+
+## Everyday help by need (11 Nov 2026)
+- `Core/DailyLogic.swift` (pure, tested): `ColorName`, `TrainCheck` (line/direction from the train display),
+  `MedicineSchedule` (missed dose shown for 3 h), `CheckIn` (once a day from 7:00), `DayAnchor`.
+- `Features/Everyday.swift`: picture board + type to speak (speech), check-in card and medicines with local
+  reminders (older), day anchor + "Take me home" and home address (dementia).
+- Magnifier: "What colour?". Ride: "Is this my train?" while waiting on the platform.
+- Verified: 100 app tests; installed on the iPhone 16 Pro. NOT tried by hand on the phone yet.

@@ -127,6 +127,7 @@ final class GuideController {
     private var thingSaid: (id: String, at: Date)?
     private var exitSigns: [(IndoorThing, Date)] = []
     private var floorHint = Date.distantPast
+    private var lastTrainCheck = Date.distantPast
 
     /// Boarding a train: the camera finds the open door (LiDAR) instead of the usual guide talk.
     var boarding = false
@@ -1081,6 +1082,16 @@ final class GuideController {
             exitSigns.append((sign, Date()))
             if !indoor { becameIndoor() }
             announceThing(sign)
+        }
+        // On the platform: "Is this my train?" from the arriving train's display.
+        if RideController.shared.phase == .waiting, let leg = RideController.shared.tracker?.current,
+           let line = leg.line, let v = TrainCheck.verdict(t.map(\.text), line: line, direction: leg.direction ?? ""),
+           Date().timeIntervalSince(lastTrainCheck) > 8 {
+            lastTrainCheck = Date()
+            let text = TrainCheck.phrase(v, line: line, direction: leg.direction ?? "")
+            if v == .yours { UINotificationFeedbackGenerator().notificationOccurred(.success) }
+            Speaker.shared.say(text, interrupt: true)
+            appendText(text, fromGuide: true)
         }
         // During a ride, station signs move the ride along (no GPS underground).
         if RideController.shared.phase == .riding { t.forEach { RideController.shared.saw($0.text) } }

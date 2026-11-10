@@ -65,6 +65,16 @@ final class AppStore {
     var devMode: Bool {
         didSet { UserDefaults.standard.set(devMode, forKey: "devMode") }
     }
+    /// Medicines with their times, doses marked taken, the last morning check-in, the home address.
+    var medicines: [Medicine] { didSet { save(medicines, "medicines") } }
+    var takenDoses: Set<String> { didSet { save(takenDoses, "takenDoses") } }
+    var lastCheckIn: Date? { didSet { UserDefaults.standard.set(lastCheckIn, forKey: "lastCheckIn") } }
+    var home: Coord? { didSet { save(home, "home") } }
+    private func save<T: Encodable>(_ v: T, _ key: String) { UserDefaults.standard.set(try? JSONEncoder().encode(v), forKey: key) }
+    private static func load<T: Decodable>(_ type: T.Type, _ key: String) -> T? {
+        UserDefaults.standard.data(forKey: key).flatMap { try? JSONDecoder().decode(T.self, from: $0) }
+    }
+
     /// Chosen voices (AVSpeechSynthesisVoice identifiers), per language; nil = the best installed one.
     var voiceEN: String? { didSet { UserDefaults.standard.set(voiceEN, forKey: "voiceEN"); Speaker.shared.voicesChanged() } }
     var voiceDE: String? { didSet { UserDefaults.standard.set(voiceDE, forKey: "voiceDE"); Speaker.shared.voicesChanged() } }
@@ -86,6 +96,10 @@ final class AppStore {
         obstacleWarnings = d.object(forKey: "obstacleWarnings") as? Bool ?? true
         testDrive = d.bool(forKey: "testDrive")
         guideDetail = GuideDetail(rawValue: d.integer(forKey: "guideDetail")) ?? .calm
+        medicines = Self.load([Medicine].self, "medicines") ?? []
+        takenDoses = Self.load(Set<String>.self, "takenDoses") ?? []
+        lastCheckIn = d.object(forKey: "lastCheckIn") as? Date
+        home = Self.load(Coord.self, "home")
         voiceEN = d.string(forKey: "voiceEN")
         voiceDE = d.string(forKey: "voiceDE")
         speechPace = SpeechPace(rawValue: d.integer(forKey: "speechPace")) ?? .calm
