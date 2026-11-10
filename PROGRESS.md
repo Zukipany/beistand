@@ -194,3 +194,64 @@ Target: hackaTUM 27–29 Nov 2026 – older people mode + safety layer fully, si
   `/drive/nearest?exclude=` (within 30°), Mapillary's own links only as fallback; re-faces after each glide (`moveend`).
   Next-turn card + green chevrons (`RouteFollower.nextStep`). Verified with a real token: Neuhauser Straße → Kapellenstraße
   walking east, 640 → 531 m, still facing east.
+
+## Calm guide, modes, Find, scooters, Dev mode (9 Nov 2026, late)
+- Feedback: too much talking about every object. Now `GuideDetail` = Navigate (default, forced while a destination is
+  set) / Explore / Dev everything. Navigate: `ObjectAlerts.calm` (ahead only, ≤ 2 m, people ≤ 1 m), one-sentence
+  look-around, transport-only labels, `HomingPolicy` near the goal. No object speech in test drives (guessed distances).
+- Find sheet + voice ("What are you looking for?") → `PlaceSearch` → nearest within 400 m → route. Backend: ice cream
+  (`amenity=ice_cream`, `cuisine=*ice_cream*`), unnamed toilets, limit 600 for 400 m searches.
+- Scooters: `/scooters` from GBFS free_bike_status (Dott Munich live, Bird Munich currently empty; `SCOOTER_GBFS` to
+  override). `ScooterAlert` vibrates (triple heavy tap) for blind/low vision/deafblind (or Dev). Visual markers only in Dev.
+- Dev mode (`AppStore.devMode`, default on in DEBUG): Dev labels on test drive, diagnostics, scooter map, demo section.
+- Test drive on the pavement: `/walkways` (OSM footways, pedestrian zones, paths, steps, and road sidewalks offset 6 m
+  from the road's middle). Photo choice penalises photos away from walkways (2 m per m, max 20) and sequences faster than
+  4 m/s (cars, +15). Sonnenstraße: 319/430 photos were from cars; now pedestrian photos 0.4-2.7 m from the pavement are
+  chosen. Without photos the walker is kept within 2.5 m of a walkway (`Walkways.constrain`, slides along walls).
+  Dev: walkways drawn green on the mini-map.
+
+## Ride helper "On the U-Bahn" (9 Nov 2026, night)
+- Backend `app/ride.py`: `/stations/search` (MVG locations), `/trip` (MVG routes → legs with every stop, expected
+  time = planned + delay, platform, exit letter, out-of-order lift/escalator).
+- App `Ride/`: `RideTracker` (pure: timetable fallback 40 s after a stop, felt stops count only ≤ 90 s before due,
+  station signs jump ahead, get-ready one stop before, get-off/change/arrived), `RideController` (CMMotionActivity
+  automotive→stopped = felt stop, haptics, speech, Dev ×20 clock), `RideView` (big next stop, red get-off, stop list,
+  Where am I?, Help), `HelpCard` (German first, English, read aloud, call contact; wording from the person's modes).
+  Guide camera: whole-picture labels every 3 s → `TransitScene` (train/station) twice in a row → offers the ride helper.
+- Verified: tests (felt stops, timetable, sign jump, scene labels, trip parsing), simulator Dev ride Marienplatz →
+  Münchner Freiheit on real MVG data to the red "Get off" screen, help card. NOT verified: a real ride underground
+  (motion stop detection, sign reading through train windows).
+- Ride, second pass: `TrainMotion` (RMS of user acceleration over 2 s: hum 0.018–0.11 g = riding after 6 s, < 0.012 g
+  for 5 s = still, steps = walking; iOS automotive or ≥ 6 m/s make it quicker). `TrainMotionWatcher` on the home screen
+  offers the ride helper (only if automotive, fast, or 45 s of hum). `RideTracker.reached` (location within
+  max(80 m, accuracy) of a stop ahead). Phases waiting → riding ("Relax: N stops", stops shown, not spoken) → arrived.
+  `DoorFinder` (LiDAR chest-height depth per 13 directions; a gap ≥ 0.9 m deeper than the wall, 2–6 columns, walled on a
+  side) for boarding. "Guide me out": nearest station entrance from the arrival station (not a stale underground fix),
+  then `afterRide`. NOT verified on a real train or platform.
+
+## Glass redesign, voices, voice control, step by step (10 Nov 2026)
+- `Features/Design.swift`: `Surface` (glassEffect, tinted; solid for Reduce Transparency / Increase Contrast / low vision
+  / easy reading), `Tile`, `TileSection`, `BeistandBackground` (MeshGradient). No GlassEffectContainer around grids (it hid
+  a tile). Home rebuilt: sections by relevance to modes, "More for other needs", glass safety bar (Speak, call, help),
+  simple big buttons for older-only / memory, story home for speech / easy reading.
+- `Core/Voices.swift` + `VoiceSettings.swift`: per-language voice choice (personal > premium > enhanced > standard, calm
+  names Ava/Zoe/Evan/Serena… Anna/Petra/Helena/Markus…), novelty and Eloquence voices hidden, pace calm (0.86×, pitch
+  0.96, 80 ms between sentences) / normal / quick, preview, Personal Voice authorisation.
+- `Core/AppRouter.swift`: `Destination` + `CommandParser` (EN/DE, help/scam/call/back first, U-Bahn with station, find
+  with category). `Features/VoiceCommand.swift`: "Yes?" → listen → confirm → open. `Features/StoryView.swift`: question
+  tree (start → go/read/talk/help → find …), info in place (address, departures, help card).
+- Mac: `SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD`; needs Xcode signed in to register the Mac (command line has no account).
+- Verified: 87 app tests; simulator: glass home (deaf profile), story to "You are here". NOT verified: voice commands with
+  a real microphone, the Mac run, Premium voices (simulator has standard ones only).
+
+## Indoors and the floor ahead; Mac build (10 Nov 2026)
+- `Guide/Indoor.swift`: `GroundProfile` (LiDAR floor height per 25 cm in the walking path from 0.4 to 3 m; step ≥ 8 cm,
+  stairs = 2+ steps the same way, drop = 50 cm without floor or > 45 cm lower; always spoken, urgent ones interrupt and
+  vibrate; repeat only a metre closer or 3–8 s later), `IndoorThing` (door, opening, window, exit sign), `Indoor`
+  (exit-sign words, indoor scene labels, what to say first: exit sign > door > opening > window).
+- `GuideCamera`: vertical plane detection; ARKit plane classification → doors/windows/ceiling; floor bins from the same
+  depth points as the obstacle lanes. Guide: indoor once (ceiling, room label or exit sign), names the most useful way
+  out, LiDAR gap = open doorway; overlay markers and a floor banner.
+- Mac: `ios/make-mac-project.sh` makes `BeistandMac.xcodeproj` (app only, no Watch, iOS minimum 26 for Catalyst);
+  build with `-destination 'platform=macOS,arch=arm64,variant=Mac Catalyst'` and ad-hoc signing (no Apple account).
+- Verified: 95 app tests; installed on the iPhone 16 Pro. NOT verified in a real building (door/window labels, stairs).

@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
-from . import crossings, data, guide, llm, orient, streetview
+from . import crossings, data, guide, llm, orient, ride, scooters, streetview
 from .config import settings
 from .lang import norm, tr
 from .ladder import Contact, Incident, Ladder, Location, State, Trigger
@@ -299,6 +299,30 @@ def warnings(lat: float, lon: float, lang: str = "en") -> dict:
 def landmarks(lat: float, lon: float, radius_m: int = Query(150, ge=30, le=400), lang: str = "en") -> dict:
     """Named streets, shops, stops and entrances around the person, for camera orientation."""
     return _data(orient.landmarks, lat, lon, radius_m, lang)
+
+
+@app.get("/stations/search")
+def station_search(q: str = Query(..., min_length=2, max_length=80)) -> dict:
+    return _data(ride.search, q)
+
+
+@app.get("/trip")
+def ride_trip(to_id: str = Query(..., pattern=r"^[a-z]{2}:\d+:\d+$"), from_id: str | None = Query(None, pattern=r"^[a-z]{2}:\d+:\d+$"),
+              lat: float | None = None, lon: float | None = None) -> dict:
+    """The next connection with every stop and its expected time, for the ride helper."""
+    return _data(ride.trip, to_id, from_id, lat, lon)
+
+
+@app.get("/walkways")
+def walk_paths(lat: float, lon: float, radius_m: int = Query(250, ge=50, le=400)) -> dict:
+    """Footways, pedestrian zones and road sidewalks as lines, so the test drive walks where people walk."""
+    return _data(orient.walkways, lat, lon, radius_m)
+
+
+@app.get("/scooters")
+def nearby_scooters(lat: float, lon: float, radius_m: int = Query(150, ge=10, le=500)) -> dict:
+    """Parked shared e-scooters and bikes nearby (open GBFS feeds), so the phone can warn before a trip."""
+    return scooters.nearby(lat, lon, radius_m)
 
 
 @app.get("/streetview/status")

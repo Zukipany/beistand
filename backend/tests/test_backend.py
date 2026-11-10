@@ -459,16 +459,17 @@ def test_drive_viewer_page_and_nearest(monkeypatch):
         def raise_for_status(self): pass
         def json(self): return self._j
     calls = []
+    monkeypatch.setattr(streetview, "_walk_near", lambda lat, lon: [])
     def fake_get(url, params=None, **kw):
         calls.append(params["bbox"])
-        if len(calls) == 1:
-            return R({"data": []})                                  # nothing within 50 m …
+        if len(calls) < 3:
+            return R({"data": []})                                  # nothing within 50 m or 80 m …
         return R({"data": [{"id": "123", "geometry": {"coordinates": [11.5757, 48.1376]}, "is_pano": True}]})
     monkeypatch.setattr(streetview, "settings", type("S", (), {"mapillary_token": "t", "google_maps_api_key": ""})())
     monkeypatch.setattr(streetview.httpx, "get", fake_get)
     r = c.get("/drive/nearest", params={"lat": 48.1374, "lon": 11.5755, "heading": 0})
     assert r.status_code == 200 and r.json() == {"id": "123", "lat": 48.1376, "lon": 11.5757, "is_pano": True}
-    assert len(calls) == 2                                          # … so it looked within 200 m
+    assert len(calls) == 3                                          # … so it looked within 200 m
 
 
 def test_streetview_rejects_bad_image_id():
@@ -486,3 +487,99 @@ def test_streetview_skips_photos_with_untrustworthy_position():
     assert streetview.position(moved) is None
     assert streetview.pick([moved, good], here, 90)["id"] == "good"
     assert streetview.position({"geometry": {"coordinates": [11.5, 48.1]}}) == (48.1, 11.5)          # no correction: GPS
+
+
+def test_landmarks_ice_cream_and_unnamed_toilets():
+    from app import orient
+    here = (48.1374, 11.5755)
+    els = [
+        {"type": "node", "lat": 48.1375, "lon": 11.5756, "tags": {"amenity": "ice_cream", "name": "Ballabeni"}},
+        {"type": "node", "lat": 48.1376, "lon": 11.5757, "tags": {"amenity": "cafe", "cuisine": "coffee_shop;ice_cream", "name": "Eiscafé Sarcletti"}},
+        {"type": "node", "lat": 48.1377, "lon": 11.5758, "tags": {"amenity": "toilets", "wheelchair": "yes"}},
+    ]
+    kinds = {o["name"]: o["kind"] for o in orient.parse(els, here, "en")}
+    assert kinds == {"Ballabeni": "ice cream", "Eiscafé Sarcletti": "ice cream", "toilets": "toilets"}
+    assert orient.is_landmark({"amenity": "toilets"})
+
+
+def test_scooters_near_sorted_and_filtered():
+    from app import scooters
+    here = (48.1374, 11.5755)
+    vs = [{"id": "dott:a", "lat": 48.13745, "lon": 11.5755, "kind": "scooter"},     # ~6 m
+          {"id": "dott:b", "lat": 48.1380, "lon": 11.5755, "kind": "bike"},         # ~67 m
+          {"id": "dott:c", "lat": 48.1400, "lon": 11.5755, "kind": "scooter"}]      # ~290 m
+    out = scooters.near(vs, here, 100)
+    assert [v["id"] for v in out] == ["dott:a", "dott:b"] and 5 < out[0]["distance_m"] < 7
+
+
+def test_scooters_parse_feed(monkeypatch):
+    from app import scooters
+    class R:
+        def __init__(self, j): self._j = j
+        def raise_for_status(self): pass
+        def json(self): return self._j
+    def fake_get(url, **kw):
+        if url.endswith("vehicle_types.json"):
+            return R({"data": {"vehicle_types": [{"vehicle_type_id": "s", "form_factor": "scooter"},
+                                                 {"vehicle_type_id": "b", "form_factor": "bicycle"}]}})
+        return R({"data": {"bikes": [
+            {"bike_id": "1", "lat": 48.1, "lon": 11.5, "vehicle_type_id": "s"},
+            {"bike_id": "2", "lat": 48.1, "lon": 11.5, "vehicle_type_id": "b"},
+            {"bike_id": "3", "lat": 48.1, "lon": 11.5, "vehicle_type_id": "s", "is_disabled": True}]}})
+    monkeypatch.setattr(scooters.httpx, "get", fake_get)
+    vs = scooters.vehicles("https://gbfs.example.org/public/v2/test/free_bike_status.json")
+    assert [(v["id"].split(":")[1], v["kind"]) for v in vs] == [("1", "scooter"), ("2", "bike")]
+
+
+def test_walk_lines_footways_and_sidewalks():
+    from app import orient
+    road = [{"lat": 48.1370, "lon": 11.5700}, {"lat": 48.1370, "lon": 11.5720}]       # east-west road
+    els = [
+        {"type": "way", "tags": {"highway": "footway"}, "geometry": [{"lat": 48.1380, "lon": 11.5700}, {"lat": 48.1381, "lon": 11.5701}]},
+        {"type": "way", "tags": {"highway": "primary", "sidewalk": "both"}, "geometry": road},
+        {"type": "way", "tags": {"highway": "primary", "sidewalk": "no"}, "geometry": road},             # no sidewalk: not walkable
+        {"type": "way", "tags": {"building": "yes"}, "geometry": road},
+    ]
+    lines = orient.walk_lines(els)
+    assert len(lines) == 3                                     # footway + left and right sidewalk
+    middle = (48.1370, 11.5710)
+    sides = sorted(round(orient.distance(middle, orient.nearest_on_line(middle, l)[0]), 1) for l in lines[1:])
+    assert sides == [6.0, 6.0]                                 # 6 m either side of the road's middle
+    assert 5.5 < orient.distance_to_lines(middle, lines) < 6.5
+
+
+def test_streetview_prefers_pavement_and_walking_sequences():
+    from app import streetview
+    here = (48.1370, 11.5710)
+    sidewalk = [[(48.13705, 11.5700), (48.13705, 11.5720)]]               # ~5.5 m north of here
+    def im(i, lat, seq, t):
+        return {"id": i, "is_pano": True, "geometry": {"coordinates": [11.5710, lat]}, "sequence": seq, "captured_at": t}
+    car = [im("car1", 48.13700, "car", 0), im("car2", 48.13700 + 10 / 111320, "car", 1000)]        # 10 m in 1 s
+    walker = [im("walk1", 48.13705, "walk", 0), im("walk2", 48.13705 + 2 / 111320, "walk", 2000)]  # 2 m in 2 s
+    speeds = streetview.sequence_speeds(car + walker)
+    assert speeds["car"] > 9 and speeds["walk"] < 1.5
+    # The car photo is right here, the walker's photo 5.5 m away on the sidewalk: the walker's wins.
+    assert streetview.pick(car[:1] + walker[:1], here, 0, walk=sidewalk, speeds=speeds)["id"] == "walk1"
+    # Without walkway and speed knowledge the nearest still wins (old behaviour).
+    assert streetview.pick(car[:1] + walker[:1], here, 0)["id"] == "car1"
+
+
+def test_parse_trip_legs_stops_and_exit():
+    from app import ride
+    conn = {"parts": [
+        {"line": {"label": "U6", "transportType": "UBAHN", "destination": "Fröttmaning"}, "realTime": True,
+         "from": {"name": "Marienplatz", "stationGlobalId": "de:09162:2", "platform": 1,
+                  "plannedDeparture": "2026-11-09T22:53:00+01:00", "departureDelayInMinutes": 1},
+         "intermediateStops": [{"name": "Odeonsplatz", "plannedDeparture": "2026-11-09T22:54:00+01:00", "arrivalDelayInMinutes": 1}],
+         "to": {"name": "Münchner Freiheit", "plannedDeparture": "2026-11-09T22:58:00+01:00",
+                "hasOutOfOrderElevator": True}, "exitLetter": "B"},
+        {"line": {"transportType": "PEDESTRIAN"}, "from": {}, "to": {}},
+    ]}
+    legs = ride.parse_trip(conn)["legs"]
+    assert len(legs) == 1
+    leg = legs[0]
+    assert (leg["line"], leg["direction"], leg["from"]["platform"]) == ("U6", "Fröttmaning", 1)
+    planned = 1794261180          # 22:53 CET
+    assert leg["from"]["time"] == planned + 60                                  # one minute late
+    assert leg["stops"][0]["name"] == "Odeonsplatz" and leg["stops"][0]["time"] == planned + 120
+    assert leg["to"]["exit"] == "B" and leg["to"]["lift_out_of_order"] is True

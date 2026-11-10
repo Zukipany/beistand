@@ -22,6 +22,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.beistand.ios
         TARGETED_DEVICE_FAMILY: "1"
+        # Apple silicon Macs can run the iPhone app (for testing, e.g. the Dev test drive with W A S D).
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
+        # Mac Catalyst: a real Mac build for testing (signed locally, no Apple account needed).
+        SUPPORTS_MACCATALYST: YES
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Beistand
         INFOPLIST_KEY_UILaunchScreen_Generation: YES

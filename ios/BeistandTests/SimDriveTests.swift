@@ -85,3 +85,30 @@ final class NextStepTests: XCTestCase {
         XCTAssertNil(f.nextStep)                                   // arrived
     }
 }
+
+final class WalkwayTests: XCTestCase {
+    // An east-west sidewalk along lat 48.1370.
+    let sidewalk = [[Coord(lat: 48.1370, lon: 11.5700), Coord(lat: 48.1370, lon: 11.5720)]]
+
+    func testStaysOnTheSidewalk() {
+        let onIt = Coord(lat: 48.1370 + 1 / 111_320, lon: 11.5710)                  // 1 m off: fine
+        XCTAssertEqual(Walkways.constrain(to: onIt, lines: sidewalk), onIt)
+        let intoBuilding = Coord(lat: 48.1370 + 8 / 111_320, lon: 11.5710)          // 8 m off: back to the edge
+        let c = Walkways.constrain(to: intoBuilding, lines: sidewalk)
+        XCTAssertEqual(Geo.distance(c, Coord(lat: 48.1370, lon: 11.5710)), 2.5, accuracy: 0.1)
+        let farAway = Coord(lat: 48.1370 + 60 / 111_320, lon: 11.5710)              // no path near: free
+        XCTAssertEqual(Walkways.constrain(to: farAway, lines: sidewalk), farAway)
+        XCTAssertEqual(Walkways.constrain(to: intoBuilding, lines: []), intoBuilding)
+    }
+
+    func testWalkingIntoAWallSlidesAlongTheSidewalk() {
+        var s = WalkerState(position: Coord(lat: 48.1370, lon: 11.5710), heading: 30)   // walking north-east, the wall is north
+        for _ in 0..<50 {
+            var n = WalkerPhysics.step(s, forward: 1, strafe: 0, turn: 0, dt: 0.1)
+            n.position = Walkways.constrain(to: n.position, lines: sidewalk)
+            s = n
+        }
+        XCTAssertLessThanOrEqual(Geo.distance(s.position, Walkways.nearest(s.position, on: sidewalk[0])!), 2.6)   // still on it
+        XCTAssertGreaterThan(Geo.offset(from: Coord(lat: 48.1370, lon: 11.5710), to: s.position).0, 2)          // moved east along it
+    }
+}

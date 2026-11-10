@@ -26,7 +26,7 @@ struct DiagnosticsView: View {
                     GuideController.shared.requestedOpen = true
                     dismiss()
                 } label: {
-                    Label(tr("Test drive: walk real streets from here", "Testfahrt: echte Straßen von hier aus ablaufen"),
+                    Label(tr("Dev: Test drive, walk real streets from here", "Dev: Testfahrt, echte Straßen von hier aus ablaufen"),
                           systemImage: "gamecontroller.fill").font(.headline)
                 }
             } footer: {
@@ -90,7 +90,7 @@ struct DiagnosticsView: View {
                 }
             }
         }
-        .navigationTitle(tr("Diagnostics", "Diagnose"))
+        .navigationTitle(tr("Dev: Diagnostics", "Dev: Diagnose"))
         .task { await load() }
         .refreshable { await load() }
     }

@@ -10,6 +10,7 @@ struct ImLostView: View {
     @State private var typing = false
     @State private var typed = ""
     @State private var showMap = false
+    @State private var showFind = false
 
     var body: some View {
         ZStack {
@@ -27,16 +28,27 @@ struct ImLostView: View {
             LinearGradient(colors: [.black.opacity(compact ? 0.5 : 0.85), .black.opacity(compact ? 0 : 0.2), .black.opacity(compact ? 0.6 : 0.9)],
                            startPoint: .top, endPoint: .bottom).ignoresSafeArea()
                 .allowsHitTesting(false)          // touches reach the street viewer underneath
-            if guide.lookAround || guide.destinationCoord != nil {
+            if compact || guide.destinationCoord != nil || guide.indoor || guide.ground != nil {
                 LiveViewOverlay().ignoresSafeArea()
             }
 
             VStack(spacing: 14) {
                 header
                 VolumeBanner()
+                if guide.suggestRide {
+                    Button {
+                    RideController.shared.afterRide = guide.destinationPlace
+                    guide.requestedOpen = false; RideController.shared.requestedOpen = true
+                } label: {
+                        Label(tr("On the U-Bahn: tell me when to get off", "In der U-Bahn: sag mir, wann ich aussteige"),
+                              systemImage: "tram.fill.tunnel").font(.title3.bold())
+                            .frame(maxWidth: .infinity, minHeight: 56)
+                    }
+                    .buttonStyle(.borderedProminent).tint(.blue)
+                }
                 if compact {
                     // Street-view layout: one caption line under the compass, a slim bar of controls.
-                    liveCaption.padding(.top, 52)
+                    liveCaption.padding(.top, 62)
                     Spacer(minLength: 0)
                     if SimDrive.shared.active { SimDriveControls() }
                     liveControls
@@ -73,6 +85,7 @@ struct ImLostView: View {
             if SimDrive.shared.active { SimDrive.shared.announce() }
         }
         .sheet(isPresented: $showMap) { DestinationMapView() }
+        .sheet(isPresented: $showFind) { FindSheet().presentationDetents([.medium]) }
         .onDisappear {
             guide.stop()
             if SimDrive.shared.active { SimDrive.shared.stop() }
@@ -86,11 +99,19 @@ struct ImLostView: View {
 
     private var header: some View {
         HStack {
-            Label(SimDrive.shared.active ? tr("Test drive", "Testfahrt") : statusText,
+            Label(SimDrive.shared.active ? "Dev" : statusText,
                   systemImage: SimDrive.shared.active ? "gamecontroller.fill" : statusIcon)
                 .font(.headline)
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(.white.opacity(0.15), in: Capsule())
+            // Mode chip: tap to switch between Navigate and Explore.
+            Button { guide.toggleExplore() } label: {
+                Label(guide.effectiveDetail.short, systemImage: guide.effectiveDetail.icon)
+                    .font(.headline)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(guide.effectiveDetail == .calm ? Color.green.opacity(0.8) : Color.orange.opacity(0.85), in: Capsule())
+            }
+            .accessibilityLabel(tr("Mode: \(guide.effectiveDetail.short). Double tap to switch.", "Modus: \(guide.effectiveDetail.short). Doppeltippen zum Wechseln."))
             Spacer()
             if guide.camera.usesLiDAR, store.obstacleWarnings { obstacleIndicator }
             if let d = guide.destination {
@@ -115,6 +136,7 @@ struct ImLostView: View {
     /// Compact controls, so the street stays visible. Same actions, each still a large target (72 pt).
     private var liveControls: some View {
         HStack(spacing: 8) {
+            LiveButton(title: tr("Find", "Suchen"), icon: "magnifyingglass", color: .green) { showFind = true }
             LiveButton(title: tr("Describe", "Beschreiben"), icon: "eye.fill", color: .blue) { guide.describeAhead() }
             LiveButton(title: tr("Map", "Karte"), icon: "map.fill", color: .brown) { showMap = true }
             LiveButton(title: guide.lookAround ? tr("Quiet", "Leise") : tr("Look", "Schauen"),
@@ -157,7 +179,7 @@ struct ImLostView: View {
                     .simultaneousGesture(LongPressGesture(minimumDuration: 1.5).onEnded { _ in typing = true })
             }
             HStack(spacing: 12) {
-                BigButton(title: guide.lookAround ? tr("Stop looking", "Umschauen aus") : tr("Look around", "Umschauen"),
+                BigButton(title: guide.lookAround ? tr("Quiet", "Leise") : tr("Look", "Schauen"),
                           color: .teal,
                           explanation: tr("Turn slowly on the spot. I say what is in each direction and read signs.",
                                           "Drehen Sie sich langsam. Ich sage, was in jeder Richtung ist, und lese Schilder.")) {
@@ -167,6 +189,9 @@ struct ImLostView: View {
                              "Halten Sie das Telefon aufrecht und drehen Sie sich langsam. Ich sage, was in jeder Richtung ist.")
                         : tr("Looking around is off.", "Umschauen ist aus."))
                 }
+                BigButton(title: tr("Find", "Suchen"), color: .green,
+                          explanation: tr("Say what you are looking for, like the station, ice cream or a toilet. I lead you to the nearest.",
+                                          "Sagen Sie, was Sie suchen, etwa Bahnhof, Eis oder Toilette. Ich führe Sie zum nächsten.")) { guide.askWhatToFind() }
                 BigButton(title: tr("Map", "Karte"), color: .brown,
                           explanation: tr("Choose the destination on a map and see lifts and step-free access there.",
                                           "Ziel auf der Karte wählen und Aufzüge und stufenlosen Zugang sehen.")) { showMap = true }
@@ -274,5 +299,49 @@ private struct LiveButton: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
+    }
+}
+
+
+/// "What are you looking for?": big buttons for what people need most, or say it.
+struct FindSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(GuideController.self) private var guide
+    @State private var typed = ""
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
+                    ForEach(PlaceSearch.categories) { c in
+                        Button { go(c.name) } label: {
+                            Label(c.name, systemImage: c.icon).font(.title3.bold())
+                                .frame(maxWidth: .infinity, minHeight: 64)
+                        }
+                        .buttonStyle(.borderedProminent).tint(c.id == "station" ? .green : .indigo)
+                    }
+                }
+                HStack {
+                    TextField(tr("Or type, e.g. Rossmann", "Oder tippen, z. B. Rossmann"), text: $typed)
+                        .textFieldStyle(.roundedBorder).font(.title3).onSubmit { go(typed) }
+                    Button { dismiss(); guide.askWhatToFind() } label: {
+                        Image(systemName: "mic.fill").font(.title2).frame(width: 52, height: 44)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityLabel(tr("Say it", "Sagen"))
+                }
+                .padding(.top, 8)
+            }
+            .padding()
+            .navigationTitle(tr("What are you looking for?", "Was suchen Sie?"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button(tr("Close", "Schließen")) { dismiss() } }
+        }
+    }
+
+    private func go(_ words: String) {
+        guard !words.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        dismiss()
+        guide.find(words)
     }
 }

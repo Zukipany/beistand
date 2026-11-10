@@ -109,8 +109,52 @@ final class GuideController {
     private(set) var landmarks: [Landmark] = []
     private var landmarksAt: Coord?
     private var sweep = SweepPolicy()
+    private var homing = HomingPolicy()
+    /// Parked e-scooters and bikes nearby (live), and when to vibrate for them.
+    private(set) var scooters: [Scooter] = []
+    private var scootersAt: (Coord, Date)?
+    private var scooterAlert = ScooterAlert()
+    /// Scooter vibration is for people who may not see them: blind, low vision, deafblind (and Dev testing).
+    private var scooterAlertsOn: Bool {
+        let s = AppStore.shared
+        return s.obstacleWarnings && (s.has(.sight) || s.has(.lowVision) || s.has(.deafblind) || s.devMode)
+    }
+    // Indoors and the floor ahead (LiDAR).
+    private(set) var indoor = false
+    private(set) var indoorThings: [IndoorThing] = []
+    private(set) var ground: GroundProfile.Event?
+    private var groundSaid: (kind: String, distance: Float, at: TimeInterval)?
+    private var thingSaid: (id: String, at: Date)?
+    private var exitSigns: [(IndoorThing, Date)] = []
+    private var floorHint = Date.distantPast
+
+    /// Boarding a train: the camera finds the open door (LiDAR) instead of the usual guide talk.
+    var boarding = false
+    private(set) var door: DoorFinder.Door?
+    private var lastDoorPhrase = ""
+    private var lastDoorSaid = Date.distantPast
+    /// After a ride: lead to the nearest station exit, then on to a place.
+    private var pendingExit: (at: Coord?, name: String?, then: GuideAPI.Place?)?
+    private var afterExit: GuideAPI.Place?
+
+    /// The camera sees the inside of a train or a station: offer the ride helper (once per guide session).
+    private(set) var suggestRide = false
+    private var sceneHits = 0
+    /// When the phone last vibrated for a scooter (Dev: the live view shows it briefly).
+    private(set) var scooterWarnedAt: Date?
+    /// While a destination is set the guide always navigates: no shops, only the way.
+    var effectiveDetail: GuideDetail {
+        let d = AppStore.shared.guideDetail
+        return destination != nil && d == .places ? .calm : d
+    }
+    private var detail: GuideDetail { effectiveDetail }
+    /// Places further away, for "Find" (loaded on demand, 400 m).
+    private var wider: [Landmark] = []
+    private var widerAt: Coord?
     private var saidSigns: Set<String> = []
     private var lastAimHint = Date.distantPast
+    /// "Find ice cream" said before the guide was open (voice command, story).
+    var pendingFind: String?
     /// Destination chosen on the map before the guide was open.
     private var pending: GuideAPI.Place?
 
@@ -158,18 +202,32 @@ final class GuideController {
         // Fast layer: obstacles and objects on the phone, every frame, independent of the network.
         beeper.enabled = AppStore.shared.obstacleWarnings
         beeper.sound = !AppStore.shared.has(.hearing) && !AppStore.shared.has(.deafblind)
-        objectAlerts = ObjectAlerts()
+        objectAlerts = AppStore.shared.guideDetail == .everything ? ObjectAlerts() : .calm
+        homing.reset()
+        scooterAlert = ScooterAlert()
+        scooters = []; scootersAt = nil
+        // Calm: speak only after a clear turn and a pause, not at every small movement.
+        sweep = SweepPolicy()
+        if AppStore.shared.guideDetail != .everything { sweep.minTurn = 45; sweep.settle = 1.0 }
         memory = SceneMemory()
         camera.onZones = { [weak self] z in self?.obstaclesChanged(z) }
         camera.onObjects = { [weak self] objects in self?.objectsSeen(objects) }
         camera.onPose = { [weak self] p in self?.poseChanged(p) }
         camera.onText = { [weak self] t in self?.textSeen(t) }
+        camera.onScene = { [weak self] labels in self?.sceneSeen(labels) }
+        camera.onDoorDepths = boarding ? { [weak self] cols in self?.doorScan(cols) } : nil
+        camera.onGround = { [weak self] e, sawFloor in self?.groundChanged(e, sawFloor: sawFloor) }
+        camera.onIndoor = { [weak self] things, ceiling in self?.indoorSeen(things, ceiling: ceiling) }
+        indoor = false; indoorThings = []; ground = nil; groundSaid = nil; thingSaid = nil; exitSigns = []
+        door = nil
+        suggestRide = false; sceneHits = 0
         Task { await loadLandmarks() }
         WalkRecorder.shared.begin()
         camera.start()
         LocationService.shared.setTracking(true)
         LocationService.shared.onUpdate = { [weak self] loc in
             self?.position = Coord(lat: loc.coordinate.latitude, lon: loc.coordinate.longitude)
+            self?.checkScooters()
             self?.maybeReloadLandmarks(loc)
             WalkRecorder.shared.log(.init(t: 0, kind: "fix", lat: loc.coordinate.latitude, lon: loc.coordinate.longitude,
                                           acc: loc.horizontalAccuracy, heading: LocationService.shared.heading))
@@ -185,6 +243,24 @@ final class GuideController {
             } catch {
                 startSimple(context: context)
             }
+            if boarding {
+                try? await Task.sleep(for: .seconds(1))
+                say(camera.usesLiDAR
+                    ? tr("Hold the phone up towards the train. I'll find the open door.",
+                         "Halten Sie das Telefon zum Zug. Ich finde die offene Tür.")
+                    : tr("Finding doors needs a phone with LiDAR. Ask someone nearby, or use the Help card.",
+                         "Türen finden braucht ein Telefon mit LiDAR. Fragen Sie jemanden, oder nutzen Sie die Hilfe-Karte."))
+            }
+            if let q = pendingFind {
+                pendingFind = nil
+                try? await Task.sleep(for: .seconds(mode == .simple ? 3 : 1))
+                find(q)
+            }
+            if let e = pendingExit {
+                pendingExit = nil
+                try? await Task.sleep(for: .seconds(mode == .simple ? 4 : 2))
+                await routeToExit(e.at, name: e.name, then: e.then)
+            }
             if let p = pending {
                 pending = nil
                 try? await Task.sleep(for: .seconds(mode == .simple ? 4 : 2))   // after the greeting
@@ -195,6 +271,8 @@ final class GuideController {
 
     func stop() {
         lookAround = false
+        boarding = false
+        camera.onDoorDepths = nil
         #if DEBUG
         demoTimer?.invalidate(); demoTimer = nil
         #endif
@@ -324,8 +402,8 @@ final class GuideController {
         mode = .simple
         status = tr("Simple mode", "Einfacher Modus")
         let place = context.isEmpty ? "" : (LocationService.shared.lastDescription ?? "")
-        let intro = announce ?? [place, tr("Where would you like to go? Tap Say destination, or What's in front of me.",
-                                           "Wohin möchten Sie? Tippen Sie auf Ziel sagen, oder auf Was ist vor mir.")]
+        let intro = announce ?? [place, tr("Where would you like to go? Tap Find, or say your destination.",
+                                           "Wohin möchten Sie? Tippen Sie auf Suchen, oder sagen Sie Ihr Ziel.")]
             .filter { !$0.isEmpty }.joined(separator: " ")
         say(intro)
     }
@@ -471,6 +549,7 @@ final class GuideController {
             self.destination = place.name
             self.destinationCoord = Coord(lat: place.lat, lon: place.lon)
             self.destinationAccess = nil
+            homing.reset()
             Task { await loadAccess(place) }
             lastReplan = Date()
             let first = follower?.firstInstruction ?? ""
@@ -576,10 +655,16 @@ final class GuideController {
 
     private func objectsSeen(_ objects: [SeenObject]) {
         liveObjects = objects
+        if scooterAlertsOn, scooterAlert.feed(objects, at: ProcessInfo.processInfo.systemUptime) {
+            ScooterHaptics.warn()
+            scooterWarnedAt = Date()
+        }
         guard !objects.isEmpty else { return }
         let here = LocationService.shared.last.map { Coord(lat: $0.coordinate.latitude, lon: $0.coordinate.longitude) }
         memory.add(objects, at: ProcessInfo.processInfo.systemUptime, position: here)
         guard AppStore.shared.obstacleWarnings else { return }
+        // Test drive: distances are only guessed from a photo, too unreliable to warn about.
+        if SimDrive.shared.active, detail != .everything { return }
         WalkRecorder.shared.log(.init(t: 0, kind: "objects", objects: objects))
         guard let sentence = objectAlerts.feed(objects, at: ProcessInfo.processInfo.systemUptime) else { return }
         warn(sentence)
@@ -640,6 +725,11 @@ final class GuideController {
                  forPerson: tr("You have arrived: \(f.destinationName).", "Sie sind angekommen: \(f.destinationName).")
                     + (destinationAccess.map { " " + $0 } ?? ""))
             follower = nil
+            // Out of the station: on to where the person wanted to go.
+            if let next = afterExit {
+                afterExit = nil
+                Task { try? await Task.sleep(for: .seconds(3)); _ = await planRoute(to: next) }
+            }
         case nil:
             // Keep the guide up to date without making it talk.
             if mode == .live, Date().timeIntervalSince(lastContext) > 15 {
@@ -712,6 +802,8 @@ final class GuideController {
         if demoTimer != nil { return }
         #endif
         pose = p
+        homeIn()
+        checkScooters()
         guard lookAround else { return }
         if let hint = CameraAim.hint(pitch: p.pitch), Date().timeIntervalSince(lastAimHint) > 6 {
             lastAimHint = Date()
@@ -720,7 +812,12 @@ final class GuideController {
         }
         guard CameraAim.hint(pitch: p.pitch) == nil, let h = p.heading, let here = hereCoord,
               let dir = sweep.feed(heading: h, at: ProcessInfo.processInfo.systemUptime) else { return }
-        let text = Orientation.sentence(heading: dir, here: here, landmarks: landmarks, signs: signs.map(\.text))
+        let text: String
+        switch detail {
+        case .everything: text = Orientation.sentence(heading: dir, here: here, landmarks: landmarks, signs: signs.map(\.text))
+        case .places: text = Orientation.shortSentence(heading: dir, here: here, landmarks: landmarks, places: 2, transportOnly: false)
+        case .calm: text = Orientation.shortSentence(heading: dir, here: here, landmarks: landmarks, places: 1, transportOnly: true)
+        }
         if mode == .live {
             tell(forGuide: tr("The person is looking around. The map says: ", "Die Person schaut sich um. Die Karte sagt: ") + text,
                  forPerson: nil, respond: false)
@@ -729,10 +826,267 @@ final class GuideController {
         appendText(text, fromGuide: true)
     }
 
+    /// Parked scooters: reload every 30 s or after 50 m; vibrate when walking towards one.
+    private func checkScooters() {
+        guard scooterAlertsOn, let here = hereCoord else { return }
+        if scootersAt.map({ Date().timeIntervalSince($0.1) > 30 || Geo.distance($0.0, here) > 50 }) ?? true {
+            scootersAt = (here, Date())
+            Task {
+                struct R: Decodable { let data: [Scooter] }
+                if let r: R = try? await GuideAPI.get("scooters", ["lat": "\(here.lat)", "lon": "\(here.lon)", "radius_m": "300"]) {
+                    scooters = r.data
+                }
+            }
+        }
+        if scooterAlert.feed(here: here, heading: pose.heading, scooters: scooters, at: ProcessInfo.processInfo.systemUptime) != nil {
+            ScooterHaptics.warn()
+            scooterWarnedAt = Date()
+        }
+    }
+
+    /// Close to the goal: "U-Bahn entrance, 15 metres, slightly left", only when it changed.
+    private func homeIn() {
+        guard let goal = destinationCoord, let here = hereCoord, follower != nil,
+              let text = homing.feed(here: here, heading: pose.heading, goal: goal, name: destination ?? tr("Destination", "Ziel"),
+                                     at: ProcessInfo.processInfo.systemUptime) else { return }
+        tell(forGuide: tr("Tell the person briefly: ", "Sag der Person kurz: ") + text, forPerson: text)
+        if mode == .live { appendText(text, fromGuide: true) }
+    }
+
+    // MARK: indoors: the way out, steps and edges
+
+    private func becameIndoor() {
+        indoor = true
+        camera.onDoorDepths = camera.onDoorDepths ?? { [weak self] cols in self?.openingScan(cols) }
+        say(tr("You seem to be inside a building. To find the way out, turn slowly: I'll tell you doors, exits and steps.",
+               "Sie scheinen in einem Gebäude zu sein. Um hinauszufinden, drehen Sie sich langsam: Ich sage Türen, Ausgänge und Stufen."))
+    }
+
+    private func indoorSeen(_ things: [IndoorThing], ceiling: Bool) {
+        if !indoor, ceiling { becameIndoor() }
+        guard indoor else { return }
+        let signs = exitSigns.filter { Date().timeIntervalSince($0.1) < 5 }.map(\.0)
+        indoorThings = signs + things.filter { abs($0.angle) <= 60 }
+        if let best = Indoor.mostUseful(indoorThings.filter { abs($0.angle) <= 35 }) { announceThing(best) }
+    }
+
+    /// An open doorway (a gap in the wall, from LiDAR) while indoors.
+    private func openingScan(_ cols: [Float?]) {
+        guard indoor, !boarding, let d = DoorFinder.find(cols, deeper: 1.2) else { return }
+        let o = IndoorThing(kind: .opening, distance: d.distance, angle: d.angle)
+        indoorThings.removeAll { $0.kind == .opening }
+        indoorThings.append(o)
+        if !indoorThings.contains(where: { $0.kind == .door || $0.kind == .exitSign }) { announceThing(o) }
+    }
+
+    /// One thing at a time, again only when it changed or after 6 s.
+    private func announceThing(_ t: IndoorThing) {
+        if let s = thingSaid, s.id == t.id, Date().timeIntervalSince(s.at) < 6 { return }
+        if let s = thingSaid, Date().timeIntervalSince(s.at) < 2.5 { return }
+        thingSaid = (t.id, Date())
+        let text = t.phrase
+        if mode == .live { tell(forGuide: tr("Tell the person: ", "Sag der Person: ") + text, forPerson: nil, respond: false) }
+        Speaker.shared.say(text, interrupt: false)
+        appendText(text, fromGuide: true)
+    }
+
+    /// Steps, stairs and edges are always said: falling is the worst that can happen.
+    private func groundChanged(_ e: GroundProfile.Event?, sawFloor: Bool) {
+        ground = e
+        if !sawFloor, indoor, Date().timeIntervalSince(floorHint) > 20 {
+            floorHint = Date()
+            say(tr("Tilt the phone a little down so I can see the floor.", "Neigen Sie das Telefon etwas nach unten, damit ich den Boden sehe."))
+            return
+        }
+        guard let e else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard GroundProfile.shouldSay(e, last: groundSaid, now: now) else { return }
+        let (k, d) = GroundProfile.kind(e)
+        groundSaid = (k, d, now)
+        let text = GroundProfile.phrase(e)
+        let urgent = GroundProfile.urgent(e)
+        if urgent {
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            if mode == .live { audio.flush() }
+        }
+        Speaker.shared.say(text, interrupt: urgent)
+        appendText(text, fromGuide: true)
+        if mode == .live { tell(forGuide: tr("The phone just warned: ", "Das Telefon hat gewarnt: ") + text, forPerson: nil, respond: false) }
+    }
+
+    // MARK: train: boarding and getting out
+
+    /// Steer to the open door: a short phrase when it changes (or every 3 s), left/right pulses.
+    private func doorScan(_ cols: [Float?]) {
+        guard boarding else { return }
+        door = DoorFinder.find(cols)
+        guard let d = door else { return }
+        let phrase = DoorFinder.phrase(d)
+        guard phrase != lastDoorPhrase || Date().timeIntervalSince(lastDoorSaid) > 3 else { return }
+        lastDoorPhrase = phrase; lastDoorSaid = Date()
+        Speaker.shared.say(phrase, interrupt: true)
+        appendText(phrase, fromGuide: true)
+        if d.angle < -12 { Haptics.pulses(2) } else if d.angle > 12 { Haptics.pulses(3) } else { Haptics.pulses(1) }
+    }
+
+    /// The train left with the person on board: boarding is over, back to the ride screen.
+    func boardingDone() {
+        guard boarding else { return }
+        boarding = false
+        camera.onDoorDepths = nil
+        requestedOpen = false
+    }
+
+    /// Called by the ride helper before opening the guide.
+    func leaveStation(at station: Coord?, name: String?, then: GuideAPI.Place?) {
+        pendingExit = (station, name, then)
+    }
+
+    private func routeToExit(_ station: Coord?, name: String?, then: GuideAPI.Place?) async {
+        afterExit = then
+        // Underground the last GPS fix can be the station where the ride began: trust it only near this station.
+        var here = station ?? hereCoord
+        if let h = hereCoord, let st = station, Geo.distance(h, st) < 300,
+           let l = LocationService.shared.last, l.timestamp.timeIntervalSinceNow > -60, l.horizontalAccuracy < 60 {
+            here = h
+        }
+        guard let here else { return }
+        // Station entrances on the map are also the exits.
+        var exits: [Landmark] = []
+        if let r: GuideAPI.Landmarks = try? await GuideAPI.get("landmarks", ["lat": "\(here.lat)", "lon": "\(here.lon)", "radius_m": "250", "lang": Lang.code]) {
+            exits = r.data
+        }
+        guard let e = Orientation.nearestEntrance(exits, here: here, within: 300) else {
+            say(tr("I don't know the exits of this station. Follow the Ausgang signs, or ask someone.",
+                   "Ich kenne die Ausgänge dieses Bahnhofs nicht. Folgen Sie den Ausgang-Schildern, oder fragen Sie jemanden."))
+            return
+        }
+        let exitName = tr("Exit \(name ?? "")", "Ausgang \(name ?? "")").trimmingCharacters(in: .whitespaces)
+        say(tr("I'll lead you to the nearest exit, \(Int(Geo.distance(here, e.coord).rounded())) metres.",
+               "Ich führe Sie zum nächsten Ausgang, \(Int(Geo.distance(here, e.coord).rounded())) Meter."))
+        _ = await planRoute(to: GuideAPI.Place(name: exitName, address: nil, lat: e.lat, lon: e.lon), from: here)
+    }
+
+    /// Mode chip: Navigate ↔ Explore, said aloud.
+    func toggleExplore() {
+        let s = AppStore.shared
+        s.guideDetail = s.guideDetail == .places ? .calm : .places
+        sweep.reset()
+        let text = s.guideDetail == .places
+            ? (destination == nil ? tr("Explore. I'll tell you about places around you when you look around.",
+                                       "Erkunden. Ich erzähle Ihnen von Orten um Sie herum, wenn Sie sich umschauen.")
+                                  : tr("Explore is on again after you arrive. Now I'm guiding you.",
+                                       "Erkunden geht nach der Ankunft wieder. Jetzt führe ich Sie."))
+            : tr("Navigate. I'll only tell you the way.", "Navigieren. Ich sage Ihnen nur den Weg.")
+        say(text)
+    }
+
+    /// "Find": the nearest place matching what the person said or tapped, then lead there.
+    func find(_ words: String) {
+        Task {
+            var here = hereCoord
+            if here == nil, let l = await LocationService.shared.current() {
+                here = Coord(lat: l.coordinate.latitude, lon: l.coordinate.longitude)
+            }
+            guard let here else {
+                say(tr("I don't know the location right now.", "Ich kenne den Standort gerade nicht.")); return
+            }
+            if widerAt.map({ Geo.distance($0, here) > 150 }) ?? true,
+               let r: GuideAPI.Landmarks = try? await GuideAPI.get("landmarks", ["lat": "\(here.lat)", "lon": "\(here.lon)",
+                                                                                 "radius_m": "400", "lang": Lang.code]) {
+                wider = r.data
+                widerAt = here
+            }
+            guard let place = PlaceSearch.find(words, in: wider + landmarks, here: here) else {
+                say(tr("I didn't find \(words) within 400 metres.", "Ich habe \(words) im Umkreis von 400 Metern nicht gefunden."))
+                return
+            }
+            let name = place.name == place.kind ? place.name : "\(place.name), \(place.kind)"
+            say(tr("\(name), \(Int(Geo.distance(here, place.coord).rounded())) metres. I'll lead you there.",
+                   "\(name), \(Int(Geo.distance(here, place.coord).rounded())) Meter. Ich führe Sie hin."))
+            homing.reset()
+            _ = await planRoute(to: GuideAPI.Place(name: place.name, address: nil, lat: place.lat, lon: place.lon))
+        }
+    }
+
+    /// Ask by voice: "What are you looking for?"
+    func askWhatToFind() {
+        say(tr("What are you looking for?", "Was suchen Sie?")) { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.listening = true
+                self.listener.start()
+                var last = "", stable = 0
+                for _ in 0..<32 {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    let t = self.listener.transcript
+                    if !t.isEmpty, t == last { stable += 1 } else { stable = 0; last = t }
+                    if stable >= 6 { break }
+                }
+                self.listener.stop()
+                self.listening = false
+                guard !last.isEmpty else { self.say(tr("I didn't understand you.", "Ich habe Sie nicht verstanden.")); return }
+                self.appendText(last, fromGuide: false)
+                self.find(last)
+            }
+        }
+    }
+
+    /// The place the person is heading to (for the ride helper to continue after the ride).
+    var destinationPlace: GuideAPI.Place? {
+        guard let d = destination, let c = destinationCoord else { return nil }
+        return GuideAPI.Place(name: d, address: nil, lat: c.lat, lon: c.lon)
+    }
+
+    /// The "Station" button: lead to the nearest U-Bahn/S-Bahn entrance (or stop).
+    func goToNearestEntrance() {
+        Task {
+            if landmarks.isEmpty { await loadLandmarks() }
+            guard let here = hereCoord, let e = Orientation.nearestEntrance(landmarks, here: here) else {
+                say(tr("I don't know a station entrance within 400 metres.", "Ich kenne keinen Bahnhofseingang im Umkreis von 400 Metern."))
+                return
+            }
+            // Unnamed entrances: name them after the station they belong to, if one is close.
+            var name = e.name
+            if name == e.kind, let st = landmarks.filter({ $0.kind != e.kind && Orientation.isTransit($0.kind) })
+                .min(by: { Geo.distance(e.coord, $0.coord) < Geo.distance(e.coord, $1.coord) }),
+               Geo.distance(e.coord, st.coord) < 150 {
+                name = "\(e.kind) \(st.name)"
+            }
+            homing.reset()
+            _ = await planRoute(to: GuideAPI.Place(name: name, address: nil, lat: e.lat, lon: e.lon))
+        }
+    }
+
+    private func sceneSeen(_ labels: [(String, Float)]) {
+        if !indoor, Indoor.looksIndoors(labels) { becameIndoor() }
+        guard !suggestRide, RideController.shared.phase == .choosing else { return }
+        guard let scene = TransitScene.from(labels), scene != .bus else { sceneHits = 0; return }
+        sceneHits += 1
+        guard sceneHits >= 2 else { return }          // twice in a row (~6 s), not one odd picture
+        suggestRide = true
+        say(scene == .train
+            ? tr("It looks like you are on a train. Tap On the U-Bahn and I'll tell you when to get off.",
+                 "Es sieht aus, als wären Sie in einer Bahn. Tippen Sie auf In der U-Bahn, dann sage ich Ihnen, wann Sie aussteigen.")
+            : tr("It looks like you are at a station. Tap On the U-Bahn if you are taking a train.",
+                 "Es sieht aus, als wären Sie an einem Bahnhof. Tippen Sie auf In der U-Bahn, wenn Sie Bahn fahren."))
+    }
+
     private func textSeen(_ t: [SeenText]) {
         signs = t
+        // Exit signs (Ausgang, Notausgang, Exit): the way out.
+        for s in t where Indoor.isExitSign(s.text) {
+            let sign = IndoorThing(kind: .exitSign, distance: 5, angle: Float((s.box.midX - 0.5) * Orientation.fieldOfView), label: s.text)
+            exitSigns.removeAll { Date().timeIntervalSince($0.1) > 5 }
+            exitSigns.append((sign, Date()))
+            if !indoor { becameIndoor() }
+            announceThing(sign)
+        }
+        // During a ride, station signs move the ride along (no GPS underground).
+        if RideController.shared.phase == .riding { t.forEach { RideController.shared.saw($0.text) } }
         guard lookAround, let here = hereCoord else { return }
-        for (sign, l) in Orientation.matchSigns(t.map(\.text), landmarks: landmarks) where !saidSigns.contains(l.id) {
+        for (sign, l) in Orientation.matchSigns(t.map(\.text), landmarks: landmarks) where !saidSigns.contains(l.id)
+            && (detail != .calm || Orientation.isTransit(l.kind) || l.name == destination) {
             saidSigns.insert(l.id)
             let d = Int(Geo.distance(here, l.coord).rounded())
             let text = tr("I can read \"\(sign)\": \(l.name), \(l.kind), \(d) metres.",

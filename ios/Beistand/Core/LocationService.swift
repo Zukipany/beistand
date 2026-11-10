@@ -9,6 +9,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     private(set) var heading: Double?          // degrees, true north if available
     private(set) var lastDescription: String?  // last spoken "Sie sind hier: …"
     var onUpdate: ((CLLocation) -> Void)?
+    /// The ride helper listens too (the guide may be closed during a ride).
+    var onRide: ((CLLocation) -> Void)?
     /// Test drive: positions come from the virtual walker, the real GPS and compass are ignored.
     private(set) var simulated = false
 
@@ -76,6 +78,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         waiters.forEach { $0.resume(returning: l) }
         waiters.removeAll()
         onUpdate?(l)
+        onRide?(l)
     }
 
     func locationManager(_ m: CLLocationManager, didFailWithError error: Error) {

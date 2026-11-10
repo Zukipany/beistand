@@ -91,6 +91,8 @@ struct ObjectAlerts {
     var peopleWithin: Float = 1.5           // crowds would otherwise talk all the time
     var repeatAfter: TimeInterval = 8
     var minGap: TimeInterval = 2
+    /// Calm mode: only things in the walking path.
+    var onlyAhead = false
     private var lastSaid: [String: TimeInterval] = [:]
     private var lastAny: TimeInterval = -.infinity
 
@@ -107,6 +109,7 @@ struct ObjectAlerts {
         guard t - lastAny >= minGap else { return nil }
         let candidates = objects
             .filter { $0.distance <= ($0.label == "person" ? peopleWithin : announceWithin) }
+            .filter { !onlyAhead || $0.side == .ahead }
             .filter { t - (lastSaid[key($0)] ?? -.infinity) >= repeatAfter }
             .sorted { rank($0) < rank($1) }
         guard let o = candidates.first else { return nil }

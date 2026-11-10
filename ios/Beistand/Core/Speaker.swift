@@ -13,7 +13,8 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
     private var onDone: (() -> Void)?                           // only touched on `queue`
     private var onWord: ((NSRange) -> Void)?                    // only touched on `queue`
     var language: String { Lang.speech }
-    var rate: Float = AVSpeechUtteranceDefaultSpeechRate * 0.85
+    /// Calm by default; Settings → Voice changes it.
+    var rate: Float { AppStore.shared.speechPace.rate }
 
     override init() {
         super.init()
@@ -56,6 +57,8 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
             let u = AVSpeechUtterance(string: text)
             u.voice = voice(for: lang)
             u.rate = rate
+            u.pitchMultiplier = AppStore.shared.speechPace.pitch
+            u.postUtteranceDelay = 0.08             // a breath between sentences
             onDone = done
             onWord = word
             synth.speak(u)
@@ -72,9 +75,24 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
 
     private func voice(for lang: String) -> AVSpeechSynthesisVoice? {
         if let v = voices[lang] { return v }
-        let v = AVSpeechSynthesisVoice(language: lang)
+        let v = Voices.voice(for: lang)
         voices[lang] = v
         return v
+    }
+
+    /// A different voice was chosen (or downloaded): look them up again.
+    func voicesChanged() { queue.async { [self] in voices = [:] } }
+
+    /// Preview a voice in Settings, whatever is chosen.
+    func preview(_ v: AVSpeechSynthesisVoice) {
+        queue.async { [self] in
+            synth.stopSpeaking(at: .immediate)
+            let u = AVSpeechUtterance(string: Voices.sample(v))
+            u.voice = v
+            u.rate = rate
+            u.pitchMultiplier = AppStore.shared.speechPace.pitch
+            synth.speak(u)
+        }
     }
 
     func speechSynthesizer(_ s: AVSpeechSynthesizer, willSpeakRangeOfSpeechString range: NSRange, utterance u: AVSpeechUtterance) {

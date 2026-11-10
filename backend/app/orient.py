@@ -21,6 +21,7 @@ KINDS: list[tuple[str, str | None, str, str]] = [
     ("public_transport", "platform", "stop", "Haltestelle"),
     ("highway", "bus_stop", "bus stop", "Bushaltestelle"),
     ("railway", "tram_stop", "tram stop", "Tramhaltestelle"),
+    ("amenity", "ice_cream", "ice cream", "Eisdiele"),
     ("amenity", "pharmacy", "pharmacy", "Apotheke"),
     ("amenity", "bank", "bank", "Bank"),
     ("amenity", "cafe", "café", "Café"),
@@ -92,7 +93,7 @@ def area(q: str, lat: float, lon: float, radius_m: int) -> list[dict]:
 
 
 def is_landmark(tags: dict) -> bool:
-    if tags.get("railway") in ("subway_entrance", "station", "tram_stop"):
+    if tags.get("railway") in ("subway_entrance", "station", "tram_stop") or tags.get("amenity") == "toilets":
         return True
     if not tags.get("name"):
         return False
@@ -138,6 +139,9 @@ def nearest_on_line(p: tuple[float, float], line: list[tuple[float, float]]) -> 
 
 def kind_of(tags: dict, lang: str) -> str | None:
     de = norm(lang) == "de"
+    # A café or shop that sells ice cream is what people mean by "ice cream".
+    if "ice_cream" in tags.get("cuisine", "") or tags.get("shop") == "ice_cream":
+        return "Eisdiele" if de else "ice cream"
     for key, value, en, ge in KINDS:
         if key in tags and (value is None or tags[key] == value):
             return ge if de else en
@@ -152,7 +156,8 @@ def parse(elements: list[dict], here: tuple[float, float], lang: str = "en", lim
         kind = kind_of(tags, lang)
         if not kind:
             continue
-        name = tags.get("name") or (kind if tags.get("railway") == "subway_entrance" else None)
+        # Entrances and toilets often have no name: their kind is the name ("Toilets", "U-Bahn entrance").
+        name = tags.get("name") or (kind if tags.get("railway") == "subway_entrance" or tags.get("amenity") == "toilets" else None)
         if not name:
             continue
         street_bearing = None
@@ -187,13 +192,16 @@ def landmarks(lat: float, lon: float, radius_m: int = 150, lang: str = "en") -> 
          f'nw["name"]["tourism"](around:{r},{clat},{clon});'
          f'nw["name"]["historic"](around:{r},{clat},{clon});'
          f'node["railway"~"subway_entrance|station|tram_stop"](around:{r},{clat},{clon});'
+         f'nw["amenity"="toilets"](around:{r},{clat},{clon});'
          f'node["highway"="bus_stop"]["name"](around:{r},{clat},{clon});'
          f'way["highway"~"{STREET_TYPES}"]["name"](around:{r},{clat},{clon});'
          f');out tags geom 400;')
 
     raw = data.cache.get(f"lm:{clat}:{clon}:{r}", 86400, lambda: area(q, clat, clon, r))
     out = dict(raw)
-    out["data"] = parse([e for e in raw["data"] if is_landmark(e.get("tags", {}))], (lat, lon), lang)
+    # The live view needs the nearest few; "Find" (400 m) needs everything to pick the nearest ice cream.
+    limit = 60 if r <= 150 else 600
+    out["data"] = parse([e for e in raw["data"] if is_landmark(e.get("tags", {}))], (lat, lon), lang, limit)
     return out
 
 
@@ -318,4 +326,68 @@ def access(lat: float, lon: float, lang: str = "en", name: str | None = None, ra
     near = [e for e in raw["data"] if (pt := _point(e)) and distance((lat, lon), pt) <= r]
     out = dict(raw)
     out["data"] = summarize_access(near, (lat, lon), lang, name)
+    return out
+
+
+# --------------------------------------------------------------------------- walkways (where people walk)
+
+FOOT = {"footway", "pedestrian", "path", "steps", "living_street", "corridor", "platform", "track"}
+SIDEWALK_OFFSET_M = 6.0      # a sidewalk tagged on a road: about this far left/right of the road's middle
+
+
+def offset_line(line: list[tuple[float, float]], metres: float) -> list[tuple[float, float]]:
+    """The line shifted sideways (positive = right of the direction of travel), flat-earth, per vertex."""
+    if len(line) < 2:
+        return line
+    lat0 = line[0][0]
+    kx, ky = 111_320 * math.cos(math.radians(lat0)), 110_540
+    pts = [((lon - line[0][1]) * kx, (lat - line[0][0]) * ky) for lat, lon in line]
+    out = []
+    for i, (x, y) in enumerate(pts):
+        a, b = pts[max(0, i - 1)], pts[min(len(pts) - 1, i + 1)]
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        n = math.hypot(dx, dy) or 1
+        nx, ny = dy / n, -dx / n                        # right-hand normal
+        out.append((line[0][0] + (y + ny * metres) / ky, line[0][1] + (x + nx * metres) / kx))
+    return out
+
+
+def walk_lines(elements: list[dict]) -> list[list[tuple[float, float]]]:
+    """Where people walk: footways, pedestrian zones, paths, steps, crossings; and sidewalks tagged on roads,
+    shifted to the side of the road they are on."""
+    out = []
+    for el in elements:
+        tags = el.get("tags", {})
+        geom = [(g["lat"], g["lon"]) for g in el.get("geometry") or [] if g]
+        hw = tags.get("highway")
+        if len(geom) < 2 or not hw:
+            continue
+        if hw in FOOT or tags.get("footway") or (hw == "cycleway" and tags.get("foot") in ("yes", "designated")):
+            out.append(geom)
+            continue
+        side = tags.get("sidewalk") or tags.get("sidewalk:both") and "both"
+        left = side in ("both", "left") or tags.get("sidewalk:left") in ("yes", "separate")
+        right = side in ("both", "right") or tags.get("sidewalk:right") in ("yes", "separate")
+        if left:
+            out.append(offset_line(geom, -SIDEWALK_OFFSET_M))
+        if right:
+            out.append(offset_line(geom, SIDEWALK_OFFSET_M))
+    return out
+
+
+def distance_to_lines(p: tuple[float, float], lines: list[list[tuple[float, float]]]) -> float:
+    best = float("inf")
+    for line in lines:
+        q, _ = nearest_on_line(p, line)
+        best = min(best, distance(p, q))
+    return best
+
+
+def walkways(lat: float, lon: float, radius_m: int = 250) -> dict:
+    clat, clon, r = round(lat, 3), round(lon, 3), int(radius_m)
+    a = f"(around:{r},{clat},{clon})"
+    q = f'[out:json][timeout:20];way["highway"]{a};out tags geom 2000;'
+    raw = data.cache.get(f"walk:{clat}:{clon}:{r}", 86400, lambda: area(q, clat, clon, r))
+    out = dict(raw)
+    out["data"] = [[[round(p[0], 6), round(p[1], 6)] for p in line] for line in walk_lines(raw["data"])]
     return out

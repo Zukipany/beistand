@@ -54,6 +54,38 @@ enum SimEstimate {
     }
 }
 
+/// Footpaths and sidewalks (from /walkways): the walker stays on them, like a real pedestrian.
+enum Walkways {
+    /// Nearest point on a polyline (flat-earth, fine for a few hundred metres).
+    static func nearest(_ p: Coord, on line: [Coord]) -> Coord? {
+        guard line.count > 1 else { return line.first }
+        var best: Coord?, bestD = Double.infinity
+        for (a, b) in zip(line, line.dropFirst()) {
+            let (bx, by) = Geo.offset(from: a, to: b)
+            let (px, py) = Geo.offset(from: a, to: p)
+            let len2 = bx * bx + by * by
+            let t = len2 > 0 ? max(0, min(1, (px * bx + py * by) / len2)) : 0
+            let q = Coord(lat: a.lat + (b.lat - a.lat) * t, lon: a.lon + (b.lon - a.lon) * t)
+            let d = Geo.distance(p, q)
+            if d < bestD { bestD = d; best = q }
+        }
+        return best
+    }
+
+    /// Where the walker may go: the step as wanted if it stays on a walkway (within `width`), else the
+    /// nearest walkway point, so walking into a building slides along its pavement instead.
+    /// No walkway data nearby: free movement.
+    static func constrain(to wanted: Coord, lines: [[Coord]], width: Double = 2.5) -> Coord {
+        let candidates = lines.compactMap { nearest(wanted, on: $0) }
+        guard let q = candidates.min(by: { Geo.distance(wanted, $0) < Geo.distance(wanted, $1) }) else { return wanted }
+        let d = Geo.distance(wanted, q)
+        if d <= width || d > 30 { return wanted }          // on the path, or no path anywhere near
+        // Back onto the edge of the walkway.
+        let f = width / d
+        return Coord(lat: q.lat + (wanted.lat - q.lat) * f, lon: q.lon + (wanted.lon - q.lon) * f)
+    }
+}
+
 /// What the walking viewer should do for the held keys / sticks. Pure, testable.
 enum ViewerInput {
     /// A step for the strongest move input (forward wins over sideways), or nil.
@@ -94,6 +126,9 @@ final class SimDrive {
     @ObservationIgnored private var lastTurnSent = Date.distantPast
     @ObservationIgnored private var imageId: String?
     @ObservationIgnored private var recognisedHeading: Double?
+    /// Walkways around the walker (Dev: drawn on the mini-map).
+    private(set) var walkways: [[Coord]] = []
+    @ObservationIgnored private var walkwaysAt: Coord?
 
     // Inputs: keys held down and the two sticks.
     var keys: Set<String> = []
@@ -122,6 +157,8 @@ final class SimDrive {
         RunLoop.main.add(t, forMode: .common)          // keeps running while a finger drags a stick
         timer = t
         source = .pictures
+        walkways = []; walkwaysAt = nil
+        loadWalkways()
         inject(force: true)
         // With a Mapillary token on the server, walk in the animated viewer instead of still pictures.
         Task {
@@ -147,6 +184,7 @@ final class SimDrive {
         case "image":
             if let lat = m["lat"] as? Double, let lon = m["lon"] as? Double { state.position = Coord(lat: lat, lon: lon) }
             imageId = (m["id"] as? String) ?? (m["id"] as? NSNumber)?.stringValue
+            loadWalkways()
             provider = "mapillary"
             if let ms = m["captured"] as? Double {
                 let f = DateFormatter(); f.dateFormat = "yyyy-MM"
@@ -169,6 +207,19 @@ final class SimDrive {
             problem = m["message"] as? String
         default:
             break
+        }
+    }
+
+    /// Walkways within 250 m, reloaded after moving 100 m.
+    private func loadWalkways() {
+        let here = state.position
+        guard walkwaysAt.map({ Geo.distance($0, here) > 100 }) ?? true else { return }
+        walkwaysAt = here
+        Task {
+            struct R: Decodable { let data: [[[Double]]] }
+            if let r: R = try? await GuideAPI.get("walkways", ["lat": "\(here.lat)", "lon": "\(here.lon)", "radius_m": "250"]) {
+                walkways = r.data.map { $0.map { Coord(lat: $0[0], lon: $0[1]) } }
+            }
         }
     }
 
@@ -234,7 +285,10 @@ final class SimDrive {
             if look != 0 { js("drive.look(\(look * dt * 0.5))") }
             return
         }
-        state = WalkerPhysics.step(state, forward: forward, strafe: strafe, turn: turn, look: look, fast: fast, dt: dt)
+        var next = WalkerPhysics.step(state, forward: forward, strafe: strafe, turn: turn, look: look, fast: fast, dt: dt)
+        next.position = Walkways.constrain(to: next.position, lines: walkways)
+        state = next
+        loadWalkways()
         inject(force: false)
     }
 

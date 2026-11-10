@@ -101,3 +101,85 @@ final class OrientationTests: XCTestCase {
         XCTAssertEqual(Orientation.sentence(heading: 90, here: here, landmarks: marks).components(separatedBy: "U-Bahn entrance").count - 1, 1)
     }
 }
+
+final class CalmTests: XCTestCase {
+    let here = Coord(lat: 48.1374, lon: 11.5755)
+    override func setUp() { Lang.override = "en" }
+    override func tearDown() { Lang.override = nil }
+
+    func testCalmWarningsOnlyForThingsInTheWay() {
+        var a = ObjectAlerts.calm
+        XCTAssertNil(a.feed([SeenObject(label: "bench", distance: 1.5, side: .right)], at: 0))      // at the side
+        XCTAssertNil(a.feed([SeenObject(label: "person", distance: 1.8, side: .ahead)], at: 5))    // walking past
+        XCTAssertNil(a.feed([SeenObject(label: "bicycle", distance: 3, side: .ahead)], at: 10))    // not close yet
+        XCTAssertEqual(a.feed([SeenObject(label: "bicycle", distance: 1.6, side: .ahead)], at: 15), "Bike, 2 metres, ahead.")
+    }
+
+    func testShortSentenceNamesOneThingTransportFirst() {
+        let marks = [
+            Landmark(name: "Rossmann", kind: "drugstore", lat: 48.13760, lon: 11.5755),
+            Landmark(name: "U-Bahn entrance", kind: "U-Bahn entrance", lat: 48.13790, lon: 11.57555),
+            Landmark(name: "Kaufingerstraße", kind: "street", lat: 48.13745, lon: 11.5755, street_bearing: 0),
+        ]
+        let s = Orientation.shortSentence(heading: 0, here: here, landmarks: marks)
+        XCTAssertEqual(s, "Facing north, on Kaufingerstraße. Ahead: U-Bahn entrance, 56 metres.")
+        XCTAssertEqual(Orientation.nearestEntrance(marks, here: here)?.name, "U-Bahn entrance")
+    }
+
+    func testHomingOnlySpeaksWhenSomethingChanged() {
+        var h = HomingPolicy()
+        let goal = Coord(lat: 48.1378, lon: 11.5755)                                         // ~44 m north
+        XCTAssertEqual(h.feed(here: here, heading: 0, goal: goal, name: "Entrance", at: 0), "Entrance, 44 metres, ahead.")
+        XCTAssertNil(h.feed(here: here, heading: 5, goal: goal, name: "Entrance", at: 10))      // nothing new
+        XCTAssertEqual(h.feed(here: here, heading: 60, goal: goal, name: "Entrance", at: 20), "Entrance, 44 metres, left.")
+        XCTAssertNil(h.feed(here: here, heading: 0, goal: goal, name: "Entrance", at: 22))      // too soon
+        let closer = Coord(lat: 48.1376, lon: 11.5755)
+        XCTAssertEqual(h.feed(here: closer, heading: 60, goal: goal, name: "Entrance", at: 30), "Entrance, 22 metres, left.")
+        XCTAssertNil(h.feed(here: Coord(lat: 48.1300, lon: 11.5755), heading: 0, goal: goal, name: "Entrance", at: 60))   // far away
+    }
+}
+
+final class ScooterAlertTests: XCTestCase {
+    let here = Coord(lat: 48.1374, lon: 11.5755)
+
+    func testCameraVibratesForScooterAheadOrVeryClose() {
+        var a = ScooterAlert()
+        XCTAssertFalse(a.feed([SeenObject(label: "scooter", distance: 2.5, side: .left)], at: 0))   // at the side, not close
+        XCTAssertTrue(a.feed([SeenObject(label: "scooter", distance: 2.5, side: .ahead)], at: 1))   // in the way
+        XCTAssertFalse(a.feed([SeenObject(label: "scooter", distance: 2.0, side: .ahead)], at: 2))  // not again so soon
+        XCTAssertTrue(a.feed([SeenObject(label: "bicycle", distance: 1.0, side: .right)], at: 5))   // within 1 m, any side
+        XCTAssertFalse(a.feed([SeenObject(label: "bench", distance: 0.8, side: .ahead)], at: 10))   // not a scooter
+    }
+
+    func testMapVibratesWhenWalkingTowardsAParkedScooter() {
+        var a = ScooterAlert()
+        let north8m = Scooter(id: "a", lat: 48.13747, lon: 11.5755, kind: "scooter")
+        XCTAssertNil(a.feed(here: here, heading: 180, scooters: [north8m], at: 0))                  // behind
+        XCTAssertNil(a.feed(here: here, heading: 60, scooters: [north8m], at: 4))                   // off to the side
+        XCTAssertEqual(a.feed(here: here, heading: 10, scooters: [north8m], at: 8)?.id, "a")         // walking towards it
+        XCTAssertNil(a.feed(here: here, heading: 0, scooters: [north8m], at: 12))                   // same scooter: not again for 30 s
+        let atFeet = Scooter(id: "b", lat: 48.13741, lon: 11.5755, kind: "bike")                    // ~1 m, any direction
+        XCTAssertEqual(a.feed(here: here, heading: 180, scooters: [atFeet], at: 16)?.id, "b")
+    }
+}
+
+final class PlaceSearchTests: XCTestCase {
+    let here = Coord(lat: 48.1374, lon: 11.5755)
+    let marks = [
+        Landmark(name: "Ballabeni", kind: "ice cream", lat: 48.1380, lon: 11.5755),
+        Landmark(name: "Café Glockenspiel", kind: "café", lat: 48.1376, lon: 11.5755),
+        Landmark(name: "toilets", kind: "toilets", lat: 48.1378, lon: 11.5755),
+        Landmark(name: "U-Bahn entrance", kind: "U-Bahn entrance", lat: 48.1377, lon: 11.5757),
+        Landmark(name: "Rossmann", kind: "drugstore", lat: 48.1375, lon: 11.5755),
+    ]
+
+    func testFindByWhatPeopleSay() {
+        XCTAssertEqual(PlaceSearch.find("I want ice cream", in: marks, here: here)?.name, "Ballabeni")
+        XCTAssertEqual(PlaceSearch.find("Eis", in: marks, here: here)?.name, "Ballabeni")
+        XCTAssertEqual(PlaceSearch.find("where is a toilet", in: marks, here: here)?.name, "toilets")
+        XCTAssertEqual(PlaceSearch.find("coffee", in: marks, here: here)?.name, "Café Glockenspiel")
+        XCTAssertEqual(PlaceSearch.find("U-Bahn", in: marks, here: here)?.name, "U-Bahn entrance")
+        XCTAssertEqual(PlaceSearch.find("rossmann", in: marks, here: here)?.name, "Rossmann")
+        XCTAssertNil(PlaceSearch.find("zoo", in: marks, here: here))
+    }
+}

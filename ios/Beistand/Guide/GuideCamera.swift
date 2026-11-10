@@ -19,6 +19,17 @@ final class GuideCamera: NSObject, ARSessionDelegate {
     var onPose: ((CameraPose) -> Void)?
     /// Text the phone reads in the picture (shop and street signs), about once per second.
     var onText: (([SeenText]) -> Void)?
+    /// What the whole picture shows (Apple's labels), about every 3 seconds: train, station, bus …
+    var onScene: (([(String, Float)]) -> Void)?
+    /// Boarding: nearest surface per direction at chest height (DoorFinder), about 3 times a second.
+    var onDoorDepths: (([Float?]) -> Void)?
+    /// The floor ahead: step, stairs or edge (nil = flat), and whether any floor was seen at all.
+    var onGround: ((GroundProfile.Event?, Bool) -> Void)?
+    /// Doors and windows ARKit recognised (plane classification), and whether a ceiling was seen (= indoors).
+    var onIndoor: (([IndoorThing], Bool) -> Void)?
+    private var lastIndoor = Date.distantPast
+    private var lastDoor = Date.distantPast
+    private var lastScene = Date.distantPast
     private(set) var latestJPEG: Data?
     private(set) var pose = CameraPose()
 
@@ -76,7 +87,7 @@ final class GuideCamera: NSObject, ARSessionDelegate {
         // however the phone is held (the compass alone gets confused when the phone is upright).
         config.worldAlignment = .gravityAndHeading
         config.frameSemantics = [.sceneDepth]
-        config.planeDetection = [.horizontal]
+        config.planeDetection = [.horizontal, .vertical]     // vertical: walls, doors, windows
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
     }
 
@@ -91,6 +102,7 @@ final class GuideCamera: NSObject, ARSessionDelegate {
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         let now = Date()
+        indoorScan(frame)
         if case .normal = frame.camera.trackingState {
             let t = frame.camera.transform
             let f = -SIMD3<Float>(t.columns.2.x, t.columns.2.y, t.columns.2.z)
@@ -121,6 +133,31 @@ final class GuideCamera: NSObject, ARSessionDelegate {
     }
 
     func session(_ session: ARSession, didAdd anchors: [ARAnchor]) { updateFloor(anchors) }
+
+    /// Doors and windows among ARKit's classified planes, relative to the camera, twice a second.
+    private func indoorScan(_ frame: ARFrame) {
+        guard onIndoor != nil, Date().timeIntervalSince(lastIndoor) > 0.5 else { return }
+        lastIndoor = Date()
+        let t = frame.camera.transform
+        let cam = SIMD3<Float>(t.columns.3.x, t.columns.3.y, t.columns.3.z)
+        let forward = -SIMD3<Float>(t.columns.2.x, t.columns.2.y, t.columns.2.z)
+        var things: [IndoorThing] = []
+        var ceiling = false
+        for case let p as ARPlaneAnchor in frame.anchors {
+            let kind: IndoorThing.Kind
+            switch p.classification {
+            case .door: kind = .door
+            case .window: kind = .window
+            case .ceiling: ceiling = true; continue
+            default: continue
+            }
+            let c = p.transform * SIMD4<Float>(p.center.x, p.center.y, p.center.z, 1)
+            if let r = Indoor.relative(SIMD3(c.x, c.y, c.z), camera: cam, forward: forward), r.distance < 8 {
+                things.append(IndoorThing(kind: kind, distance: r.distance, angle: r.angle))
+            }
+        }
+        DispatchQueue.main.async { self.onIndoor?(things, ceiling) }
+    }
     func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) { updateFloor(anchors) }
 
     /// The lowest horizontal plane is the ground (ARKit finds it within a few seconds of walking).
@@ -170,6 +207,17 @@ final class GuideCamera: NSObject, ARSessionDelegate {
                 points.append(ObstacleGeometry.worldPoint(u: Float(u), v: Float(v), depth: d,
                                                           fx: fx, fy: fy, cx: cx, cy: cy, cameraTransform: t))
             }
+        }
+        if onGround != nil {
+            let bins = GroundProfile.floor(points: points, camera: cam, forward: forward)
+            let e = GroundProfile.analyze(bins)
+            let sawFloor = bins.contains { $0 != nil }
+            DispatchQueue.main.async { self.onGround?(e, sawFloor) }
+        }
+        if onDoorDepths != nil, Date().timeIntervalSince(lastDoor) > 0.3 {
+            lastDoor = Date()
+            let cols = DoorFinder.depths(points: points, camera: cam, forward: forward, floorY: floor)
+            DispatchQueue.main.async { self.onDoorDepths?(cols) }
         }
         return ObstacleGeometry.zones(points: points, camera: cam, forward: forward, floorY: floor)
     }
@@ -313,6 +361,7 @@ extension GuideCamera {
     // MARK: reading signs (on the phone, no network)
 
     fileprivate func readText(_ jpeg: Data) {
+        classifyScene(jpeg)
         DispatchQueue.main.async { [self] in
             guard onText != nil, !textBusy else { return }
             textBusy = true
@@ -322,6 +371,19 @@ extension GuideCamera {
                     self?.textBusy = false
                     self?.onText?(found)
                 }
+            }
+        }
+    }
+
+    fileprivate func classifyScene(_ jpeg: Data) {
+        DispatchQueue.main.async { [self] in
+            guard onScene != nil, Date().timeIntervalSince(lastScene) > 3 else { return }
+            lastScene = Date()
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let req = VNClassifyImageRequest()
+                try? VNImageRequestHandler(data: jpeg).perform([req])
+                let labels = (req.results ?? []).prefix(30).map { ($0.identifier, $0.confidence) }
+                DispatchQueue.main.async { self?.onScene?(Array(labels)) }
             }
         }
     }

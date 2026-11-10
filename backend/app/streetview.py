@@ -17,7 +17,7 @@ import httpx
 
 from . import data
 from .config import settings
-from .orient import distance
+from .orient import distance, distance_to_lines, walkways
 
 
 class NoImagery(RuntimeError):
@@ -104,8 +104,38 @@ def position(im: dict) -> tuple[float, float] | None:
     return (p[1], p[0]) if p else None
 
 
-def pick(images: list[dict], here: tuple[float, float], heading: float) -> dict | None:
-    """Nearest picture that looks the right way. Panoramas look every way; 30° off counts like 10 m."""
+def sequence_speeds(images: list[dict]) -> dict[str, float]:
+    """Median speed (m/s) of each photo sequence: about 1-2 for someone walking, 5+ for a car."""
+    by_seq: dict[str, list[dict]] = {}
+    for im in images:
+        if im.get("sequence") and im.get("captured_at") is not None:
+            by_seq.setdefault(im["sequence"], []).append(im)
+    out = {}
+    for seq, ims in by_seq.items():
+        ims.sort(key=lambda i: i["captured_at"])
+        v = []
+        for a, b in zip(ims, ims[1:]):
+            dt = (b["captured_at"] - a["captured_at"]) / 1000
+            pa, pb = position(a), position(b)
+            if 0 < dt < 30 and pa and pb:
+                v.append(distance(pa, pb) / dt)
+        if v:
+            v.sort()
+            out[seq] = v[len(v) // 2]
+    return out
+
+
+DRIVING = 4.0          # m/s: faster than this, the photos were taken from a car or bike on the road
+
+
+def pick(images: list[dict], here: tuple[float, float], heading: float,
+         walk: list | None = None, speeds: dict[str, float] | None = None) -> dict | None:
+    """Nearest picture that looks the right way, taken where a pedestrian walks.
+
+    Panoramas look every way; 30° off counts like 10 m. A photo away from footpaths and sidewalks costs
+    2 m per metre (up to 20), one from a sequence driven by car 15 m: a walker sees the street from the
+    pavement, not from the middle of the road.
+    """
     best, best_score = None, float("inf")
     for im in images:
         pos = position(im)
@@ -122,6 +152,12 @@ def pick(images: list[dict], here: tuple[float, float], heading: float) -> dict 
             if off > 60:
                 continue
             score = d + off / 3
+        if walk:
+            off_path = distance_to_lines(pos, walk)
+            if off_path > 3:
+                score += min(20.0, 2 * off_path)
+        if speeds and speeds.get(im.get("sequence", ""), 0) > DRIVING:
+            score += 15
         if score < best_score:
             best, best_score = im, score
     return best
@@ -155,7 +191,8 @@ def _crop(jpeg: bytes, box: tuple[int, int, int, int]) -> bytes:
     return buf.getvalue()
 
 
-FIELDS = "id,thumb_2048_url,thumb_1024_url,computed_compass_angle,compass_angle,geometry,computed_geometry,is_pano,captured_at"
+FIELDS = ("id,thumb_2048_url,thumb_1024_url,computed_compass_angle,compass_angle,geometry,computed_geometry,"
+          "is_pano,captured_at,sequence")
 
 
 def nearest(lat: float, lon: float, heading: float, exclude: str | None = None) -> dict:
@@ -168,11 +205,20 @@ def nearest(lat: float, lon: float, heading: float, exclude: str | None = None) 
         r = httpx.get(MAPILLARY, params={"access_token": settings.mapillary_token, "limit": 1000, "fields": FIELDS,
                                          "bbox": f"{lon - d},{lat - d},{lon + d},{lat + d}"}, headers=data.UA, timeout=15)
         r.raise_for_status()
-        im = pick([i for i in r.json().get("data", []) if i.get("id") != exclude], (lat, lon), heading)
+        images = [i for i in r.json().get("data", []) if i.get("id") != exclude]
+        im = pick(images, (lat, lon), heading, walk=_walk_near(lat, lon), speeds=sequence_speeds(images))
         if im:
             lat2, lon2 = position(im)
             return {"id": im["id"], "lat": lat2, "lon": lon2, "is_pano": bool(im.get("is_pano"))}
     raise NoImagery("mapillary: no picture within 200 m")
+
+
+def _walk_near(lat: float, lon: float) -> list:
+    """Walkway lines around (cached per ~100 m); none if OpenStreetMap is not reachable."""
+    try:
+        return [[tuple(p) for p in line] for line in walkways(lat, lon, 250)["data"]]
+    except (httpx.HTTPError, ValueError, KeyError):
+        return []
 
 
 def by_id(image_id: str, heading: float, fov: float = 80) -> Picture:

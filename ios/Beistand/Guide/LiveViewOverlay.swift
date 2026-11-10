@@ -11,6 +11,8 @@ struct LiveViewOverlay: View {
             ZStack(alignment: .topLeading) {
                 recognitionBoxes(geo.size)
                 if let h = guide.pose.heading, let here = here {
+                    if AppStore.shared.devMode { scooterMarks(geo.size, heading: h, here: here) }
+                    indoorMarks(geo.size)
                     placeLabels(geo.size, heading: h, here: here)
                     destination(geo.size, heading: h, here: here)
                     if let step = guide.nextStep {
@@ -21,6 +23,16 @@ struct LiveViewOverlay: View {
                 }
                 VStack(spacing: 8) {
                     CompassStrip(heading: guide.pose.heading, destinationBearing: destinationBearing, exact: guide.pose.fromCamera)
+                    if let g = guide.ground {
+                        Label(GroundProfile.phrase(g), systemImage: GroundProfile.urgent(g) ? "exclamationmark.octagon.fill" : "stairs")
+                            .font(.title3.bold()).foregroundStyle(.white).padding(10)
+                            .background(GroundProfile.urgent(g) ? Color.red : Color.orange, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    if AppStore.shared.devMode, let w = guide.scooterWarnedAt, Date().timeIntervalSince(w) < 2.5 {
+                        Label(tr("Dev: scooter vibration", "Dev: Roller-Vibration"), systemImage: "scooter")
+                            .font(.title3.bold()).foregroundStyle(.black).padding(10)
+                            .background(.orange, in: RoundedRectangle(cornerRadius: 12))
+                    }
                     if let hint = CameraAim.hint(pitch: guide.pose.pitch) {
                         Label(hint, systemImage: "iphone.gen3.radiowaves.left.and.right")
                             .font(.headline).padding(10)
@@ -28,7 +40,7 @@ struct LiveViewOverlay: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.top, 104)          // below the guide's status line
+                .padding(.top, 116)          // below the guide's status line and mode chip
             }
         }
         .allowsHitTesting(false)
@@ -50,6 +62,8 @@ struct LiveViewOverlay: View {
         let fov = Orientation.fieldOfView
         let seen = Orientation.around(guide.landmarks, here: here, heading: heading)
             .filter { abs($0.relative) <= fov / 2 && !$0.landmark.isStreet }
+            // "Only the way": transport only, so the picture stays readable.
+            .filter { guide.effectiveDetail != .calm || Orientation.isTransit($0.landmark.kind) }
             .prefix(8)
         let placed = LabelLayout.rows(Array(seen).map { size.width * (0.5 + $0.relative / fov) }, width: size.width)
         let street = Orientation.around(guide.landmarks, here: here, heading: heading, within: 30).first { $0.landmark.isStreet }
@@ -92,6 +106,38 @@ struct LiveViewOverlay: View {
                     .font(.title3.bold()).padding(10)
                     .background(.red, in: Capsule())
                     .position(x: rel < 0 ? 110 : size.width - 110, y: size.height * 0.40)
+            }
+        }
+    }
+
+    /// Doors, open doorways, windows and exit signs in their real direction.
+    private func indoorMarks(_ size: CGSize) -> some View {
+        let fov = Float(Orientation.fieldOfView)
+        return ZStack {
+            ForEach(guide.indoorThings.filter { abs($0.angle) <= fov / 2 }) { t in
+                Label(t.kind == .exitSign ? (t.label ?? "Exit") : "\(max(1, Int(t.distance.rounded()))) m",
+                      systemImage: t.kind == .window ? "window.vertical.closed" : t.kind == .exitSign ? "figure.walk.departure" : "door.left.hand.open")
+                    .font(.title3.bold()).foregroundStyle(.white)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(t.kind == .exitSign ? Color.green : t.kind == .window ? Color.cyan : Color.blue, in: Capsule())
+                    .overlay(Capsule().stroke(.white, lineWidth: 2))
+                    .position(x: size.width * CGFloat(0.5 + t.angle / fov), y: size.height * 0.5)
+            }
+        }
+    }
+
+    /// Parked e-scooters and bikes in the picture: something to walk around.
+    private func scooterMarks(_ size: CGSize, heading: Double, here: Coord) -> some View {
+        let fov = Orientation.fieldOfView
+        let seen = guide.scooters.map { s in (s, Geo.distance(here, s.coord), Orientation.relative(Geo.bearing(here, s.coord), heading: heading)) }
+            .filter { $0.1 <= 30 && abs($0.2) <= fov / 2 }
+        return ZStack {
+            ForEach(seen, id: \.0.id) { s, d, rel in
+                Label("\(Int(d.rounded())) m", systemImage: s.kind == "bike" ? "bicycle" : "scooter")
+                    .font(.headline.bold()).foregroundStyle(.black)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(.orange, in: Capsule())
+                    .position(x: size.width * (0.5 + rel / fov), y: size.height * (0.66 - 0.12 * min(d, 30) / 30))
             }
         }
     }

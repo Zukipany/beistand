@@ -140,12 +140,25 @@ struct SimMiniMap: View {
         MapReader { proxy in
             Map(position: .constant(.camera(MapCamera(centerCoordinate: here, distance: 450, heading: drive.state.heading))),
                 interactionModes: []) {
+                // Dev: where the walker may walk (footways, pedestrian zones, sidewalks).
+                if AppStore.shared.devMode {
+                    ForEach(Array(drive.walkways.enumerated()), id: \.offset) { _, line in
+                        MapPolyline(coordinates: line.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) })
+                            .stroke(.green.opacity(0.8), lineWidth: 2)
+                    }
+                }
                 if guide.routeLine.count > 1 {
                     MapPolyline(coordinates: guide.routeLine.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) })
                         .stroke(.blue, lineWidth: 4)
                 }
                 if let d = guide.destinationCoord {
                     Marker("", systemImage: "flag.checkered", coordinate: CLLocationCoordinate2D(latitude: d.lat, longitude: d.lon)).tint(.red)
+                }
+                ForEach(AppStore.shared.devMode ? guide.scooters : []) { s in
+                    Annotation("", coordinate: CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)) {
+                        Image(systemName: s.kind == "bike" ? "bicycle" : "scooter").font(.caption2.bold())
+                            .padding(3).background(.orange, in: Circle())
+                    }
                 }
                 Annotation("", coordinate: here) {
                     Image(systemName: "location.north.fill").font(.title2).foregroundStyle(.orange)

@@ -60,6 +60,21 @@ final class AppStore {
     var testDrive: Bool {
         didSet { UserDefaults.standard.set(testDrive, forKey: "testDrive") }
     }
+    /// Dev mode: testing tools (test drive, diagnostics, scooter map, demo buttons) are visible and
+    /// labelled "Dev". On by default in testing builds, off in a release.
+    var devMode: Bool {
+        didSet { UserDefaults.standard.set(devMode, forKey: "devMode") }
+    }
+    /// Chosen voices (AVSpeechSynthesisVoice identifiers), per language; nil = the best installed one.
+    var voiceEN: String? { didSet { UserDefaults.standard.set(voiceEN, forKey: "voiceEN"); Speaker.shared.voicesChanged() } }
+    var voiceDE: String? { didSet { UserDefaults.standard.set(voiceDE, forKey: "voiceDE"); Speaker.shared.voicesChanged() } }
+    func voiceID(for lang: String) -> String? { lang == "de" ? voiceDE : lang == "en" ? voiceEN : nil }
+    /// How fast and how warmly the app speaks.
+    var speechPace: SpeechPace { didSet { UserDefaults.standard.set(speechPace.rawValue, forKey: "speechPace") } }
+    /// How much the guide says (calm by default: the way and real obstacles only).
+    var guideDetail: GuideDetail {
+        didSet { UserDefaults.standard.set(guideDetail.rawValue, forKey: "guideDetail") }
+    }
 
     private init() {
         let d = UserDefaults.standard
@@ -70,6 +85,15 @@ final class AppStore {
         demoPhoneImpactIsFall = d.bool(forKey: "demoFall")
         obstacleWarnings = d.object(forKey: "obstacleWarnings") as? Bool ?? true
         testDrive = d.bool(forKey: "testDrive")
+        guideDetail = GuideDetail(rawValue: d.integer(forKey: "guideDetail")) ?? .calm
+        voiceEN = d.string(forKey: "voiceEN")
+        voiceDE = d.string(forKey: "voiceDE")
+        speechPace = SpeechPace(rawValue: d.integer(forKey: "speechPace")) ?? .calm
+        #if DEBUG
+        devMode = d.object(forKey: "devMode") as? Bool ?? true
+        #else
+        devMode = d.bool(forKey: "devMode")
+        #endif
         if let data = d.data(forKey: "profile") {
             profile = try? JSONDecoder().decode(Profile.self, from: data)
         }
